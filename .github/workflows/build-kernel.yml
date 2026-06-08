@@ -1,4 +1,4 @@
-name: "🔨 Build SukiSU-Ultra Kernel (lisa) v9"
+name: "🔨 Build SukiSU-Ultra Kernel (lisa) v10"
 
 on:
   workflow_dispatch:
@@ -85,7 +85,6 @@ jobs:
           echo ""
           if [ -d "drivers/kernelsu" ] || [ -d "KernelSU" ]; then
             echo "✅ SukiSU-Ultra integrated successfully (builtin mode)"
-            # Show version if available
             grep -r "KERNEL_SU_VERSION" drivers/kernelsu/ KernelSU/ 2>/dev/null | head -3 || true
           else
             echo "❌ SukiSU-Ultra integration failed!"
@@ -104,12 +103,12 @@ jobs:
           # susfs.h
           if [ ! -f include/linux/susfs.h ]; then
             cat > include/linux/susfs.h << 'STUB1'
-          #ifndef _LINUX_SUSFS_H
-          #define _LINUX_SUSFS_H
-          #include <linux/types.h>
-          /* Stub header — SUSFS not integrated for this build */
-          #endif /* _LINUX_SUSFS_H */
-          STUB1
+#ifndef _LINUX_SUSFS_H
+#define _LINUX_SUSFS_H
+#include <linux/types.h>
+/* Stub header — SUSFS not integrated for this build */
+#endif /* _LINUX_SUSFS_H */
+STUB1
             echo "  ✅ Created include/linux/susfs.h (stub)"
           else
             echo "  ℹ️ include/linux/susfs.h already exists"
@@ -118,11 +117,11 @@ jobs:
           # susfs_def.h
           if [ ! -f include/linux/susfs_def.h ]; then
             cat > include/linux/susfs_def.h << 'STUB2'
-          #ifndef _LINUX_SUSFS_DEF_H
-          #define _LINUX_SUSFS_DEF_H
-          /* Stub header — SUSFS definitions not available */
-          #endif /* _LINUX_SUSFS_DEF_H */
-          STUB2
+#ifndef _LINUX_SUSFS_DEF_H
+#define _LINUX_SUSFS_DEF_H
+/* Stub header — SUSFS definitions not available */
+#endif /* _LINUX_SUSFS_DEF_H */
+STUB2
             echo "  ✅ Created include/linux/susfs_def.h (stub)"
           else
             echo "  ℹ️ include/linux/susfs_def.h already exists"
@@ -131,11 +130,11 @@ jobs:
           # susfs_redirect.h
           if [ ! -f include/linux/susfs_redirect.h ]; then
             cat > include/linux/susfs_redirect.h << 'STUB3'
-          #ifndef _LINUX_SUSFS_REDIRECT_H
-          #define _LINUX_SUSFS_REDIRECT_H
-          /* Stub header — SUSFS redirect not available */
-          #endif /* _LINUX_SUSFS_REDIRECT_H */
-          STUB3
+#ifndef _LINUX_SUSFS_REDIRECT_H
+#define _LINUX_SUSFS_REDIRECT_H
+/* Stub header — SUSFS redirect not available */
+#endif /* _LINUX_SUSFS_REDIRECT_H */
+STUB3
             echo "  ✅ Created include/linux/susfs_redirect.h (stub)"
           else
             echo "  ℹ️ include/linux/susfs_redirect.h already exists"
@@ -153,20 +152,20 @@ jobs:
             bash $WORK_DIR/scripts/apply-hooks.sh
           fi
 
-      # ── 7. Clang compatibility patches ─────────────────────
-      - name: "🩹 Step 7: Clang compatibility patches"
+      # ── 7. Clang & source compatibility patches ────────────
+      - name: "🩹 Step 7: Clang & source compatibility patches"
         run: |
           cd $WORK_DIR/kernel_source
 
-          echo "🩹 Applying Clang compatibility patches..."
+          echo "🩹 Applying compatibility patches..."
 
           # Fix 1: typecheck.h — uninitialized __dummy2
           if [ -f include/linux/typecheck.h ]; then
             if grep -q 'typeof(x) __dummy2;' include/linux/typecheck.h; then
               sed -i 's/typeof(x) __dummy2;/typeof(x) __dummy2 = (typeof(x))0;/' include/linux/typecheck.h
-              echo "  ✅ Fixed include/linux/typecheck.h (__dummy2 init)"
+              echo "  ✅ Fix 1: typecheck.h (__dummy2 initialized)"
             else
-              echo "  ℹ️ typecheck.h already patched or different format"
+              echo "  ℹ️ Fix 1: typecheck.h already patched"
             fi
           fi
 
@@ -175,14 +174,40 @@ jobs:
           if [ -f "$DSC_FILE" ]; then
             if grep -q 'static inline _dsc_subblk_offset' "$DSC_FILE"; then
               sed -i 's/static inline _dsc_subblk_offset/static inline int _dsc_subblk_offset/' "$DSC_FILE"
-              echo "  ✅ Fixed $DSC_FILE (added int return type)"
+              echo "  ✅ Fix 2: sde_hw_dsc_1_2.c (added int return type)"
             else
-              echo "  ℹ️ sde_hw_dsc_1_2.c already patched or different format"
+              echo "  ℹ️ Fix 2: sde_hw_dsc_1_2.c already patched"
             fi
           fi
 
+          # Fix 3: SukiSU-Ultra sulog/event.c — USER_ARG_NULL type mismatch
+          # user_arg_null_ptr() returns struct user_arg_ptr * (pointer)
+          # but ksu_sulog_capture() expects struct user_arg_ptr (value)
+          # Fix: dereference the pointer with (*)
+          SULOG_FILE="drivers/kernelsu/sulog/event.c"
+          if [ ! -f "$SULOG_FILE" ]; then
+            # Try alternative paths
+            SULOG_FILE=$(find drivers/ -path "*/sulog/event.c" -type f 2>/dev/null | head -1)
+          fi
+          if [ -n "$SULOG_FILE" ] && [ -f "$SULOG_FILE" ]; then
+            echo "  📍 Found sulog: $SULOG_FILE"
+            if grep -q 'define USER_ARG_NULL.*user_arg_null_ptr()' "$SULOG_FILE"; then
+              sed -i 's/#define USER_ARG_NULL user_arg_null_ptr()/#define USER_ARG_NULL (*user_arg_null_ptr())/' "$SULOG_FILE"
+              echo "  ✅ Fix 3: sulog/event.c (USER_ARG_NULL dereferenced)"
+            elif grep -q 'USER_ARG_NULL' "$SULOG_FILE"; then
+              echo "  ℹ️ Fix 3: USER_ARG_NULL found but different format, trying broader fix..."
+              # Broader pattern: any line with user_arg_null_ptr() in a #define
+              sed -i 's/user_arg_null_ptr()/(*user_arg_null_ptr())/' "$SULOG_FILE"
+              echo "  ✅ Fix 3: Broad fix applied to sulog/event.c"
+            else
+              echo "  ℹ️ Fix 3: USER_ARG_NULL not found in sulog/event.c"
+            fi
+          else
+            echo "  ℹ️ Fix 3: sulog/event.c not found (may not exist in this version)"
+          fi
+
           echo ""
-          echo "✅ Clang compatibility patches done"
+          echo "✅ All compatibility patches done"
 
       # ── 8. Modify defconfig ─────────────────────────────────
       - name: "⚙️ Step 8: Modify defconfig (KSU + disable SUSFS)"
@@ -219,7 +244,6 @@ jobs:
           # ── Enable KSU (builtin) ──
           echo "🔧 Enabling KSU (builtin mode)..."
           sed -i '/CONFIG_KSU/d' "$DEFCONFIG"
-          sed -i '/CONFIG_KSU_MANUAL_HOOK/d' "$DEFCONFIG"
           echo "CONFIG_KSU=y" >> "$DEFCONFIG"
           echo "CONFIG_KSU_MANUAL_HOOK=y" >> "$DEFCONFIG"
 
@@ -236,26 +260,26 @@ jobs:
 
           # ══════════════════════════════════════════════════════
           # ⚠️ DISABLE SUSFS — builtin mode enables it by default
-          #    but we don't have full susfs kernel patches integrated
+          #    but we don't have full susfs kernel patches
           # ══════════════════════════════════════════════════════
           echo ""
           echo "🚫 Disabling SUSFS (not fully integrated)..."
           sed -i '/CONFIG_KSU_SUSFS/d' "$DEFCONFIG"
-          cat >> "$DEFCONFIG" << 'SUSFS_OFF'
-          # CONFIG_KSU_SUSFS is not set
-          # CONFIG_KSU_SUSFS_SUS_PATH is not set
-          # CONFIG_KSU_SUSFS_SUS_MOUNT is not set
-          # CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT is not set
-          # CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT is not set
-          # CONFIG_KSU_SUSFS_SUS_KSTAT is not set
-          # CONFIG_KSU_SUSFS_SUS_OVERLAYFS is not set
-          # CONFIG_KSU_SUSFS_TRY_UMOUNT is not set
-          # CONFIG_KSU_SUSFS_SPOOF_UNAME is not set
-          # CONFIG_KSU_SUSFS_ENABLE_LOG is not set
-          # CONFIG_KSU_SUSFS_OPEN_REDIRECT is not set
-          # CONFIG_KSU_SUSFS_SUS_SU is not set
-          SUSFS_OFF
-          echo "  ✅ All CONFIG_KSU_SUSFS* entries disabled in defconfig"
+          {
+            echo "# CONFIG_KSU_SUSFS is not set"
+            echo "# CONFIG_KSU_SUSFS_SUS_PATH is not set"
+            echo "# CONFIG_KSU_SUSFS_SUS_MOUNT is not set"
+            echo "# CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT is not set"
+            echo "# CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT is not set"
+            echo "# CONFIG_KSU_SUSFS_SUS_KSTAT is not set"
+            echo "# CONFIG_KSU_SUSFS_SUS_OVERLAYFS is not set"
+            echo "# CONFIG_KSU_SUSFS_TRY_UMOUNT is not set"
+            echo "# CONFIG_KSU_SUSFS_SPOOF_UNAME is not set"
+            echo "# CONFIG_KSU_SUSFS_ENABLE_LOG is not set"
+            echo "# CONFIG_KSU_SUSFS_OPEN_REDIRECT is not set"
+            echo "# CONFIG_KSU_SUSFS_SUS_SU is not set"
+          } >> "$DEFCONFIG"
+          echo "  ✅ All CONFIG_KSU_SUSFS* disabled in defconfig"
 
           # ── Generate .config ──
           echo ""
@@ -266,10 +290,8 @@ jobs:
           echo ""
           echo "🚫 Post-defconfig: Force disabling SUSFS in .config..."
           if [ -f out/.config ]; then
-            # Replace any CONFIG_KSU_SUSFS=y with disabled
             sed -i 's/^CONFIG_KSU_SUSFS=y$/# CONFIG_KSU_SUSFS is not set/' out/.config
             sed -i 's/^CONFIG_KSU_SUSFS_[A-Z_]*=y$/# & is not set/' out/.config
-            # More thorough: catch all SUSFS sub-options
             sed -i '/^CONFIG_KSU_SUSFS/s/=y/ is not set/' out/.config
             sed -i '/^CONFIG_KSU_SUSFS/s/^CONFIG/# CONFIG/' out/.config
 
@@ -311,7 +333,6 @@ jobs:
             echo "✅ Toolchain ready"
             "$CLANG_BIN/clang" --version | head -3
           else
-            # Try finding clang binary
             CLANG_BIN=$(find $WORK_DIR/toolchain -name "clang" -type f -executable | head -1)
             if [ -n "$CLANG_BIN" ]; then
               CLANG_BIN=$(dirname "$CLANG_BIN")
@@ -333,20 +354,20 @@ jobs:
           CLANG_PATH="${{ env.CLANG_BIN }}"
           export PATH="$CLANG_PATH:$PATH"
 
-          # ── KCFLAGS: Suppress newer Clang warnings for 5.4 kernel ──
-          KCFLAGS_VAL="-Wno-default-const-init-var-unsafe"       # typecheck.h
-          KCFLAGS_VAL="$KCFLAGS_VAL -Wno-default-const-init-field-unsafe"  # params.c
-          KCFLAGS_VAL="$KCFLAGS_VAL -Wno-sometimes-uninitialized"          # various
-          KCFLAGS_VAL="$KCFLAGS_VAL -Wno-uninitialized"                    # sde_rm.c
-          KCFLAGS_VAL="$KCFLAGS_VAL -Wno-enum-conversion"                  # enum casts
-          KCFLAGS_VAL="$KCFLAGS_VAL -Wno-enum-compare"                     # msm_ion.c
-          KCFLAGS_VAL="$KCFLAGS_VAL -Wno-implicit-function-declaration"    # old drivers
-          KCFLAGS_VAL="$KCFLAGS_VAL -Wno-implicit-int"                     # sde_hw_dsc
-          KCFLAGS_VAL="$KCFLAGS_VAL -Wno-int-conversion"                   # ptr/int casts
-          KCFLAGS_VAL="$KCFLAGS_VAL -Wno-unused-function"                  # ifdef'd funcs
-          KCFLAGS_VAL="$KCFLAGS_VAL -Wno-gnu-offsetof-extensions"          # GNU ext
-          KCFLAGS_VAL="$KCFLAGS_VAL -Wno-single-bit-bitfield-constant-conversion"  # tcp
-          KCFLAGS_VAL="$KCFLAGS_VAL -Wno-array-parameter"                  # parser_api.c
+          # ── KCFLAGS: 13 flags to suppress newer Clang warnings ──
+          KCFLAGS_VAL="-Wno-default-const-init-var-unsafe"
+          KCFLAGS_VAL="$KCFLAGS_VAL -Wno-default-const-init-field-unsafe"
+          KCFLAGS_VAL="$KCFLAGS_VAL -Wno-sometimes-uninitialized"
+          KCFLAGS_VAL="$KCFLAGS_VAL -Wno-uninitialized"
+          KCFLAGS_VAL="$KCFLAGS_VAL -Wno-enum-conversion"
+          KCFLAGS_VAL="$KCFLAGS_VAL -Wno-enum-compare"
+          KCFLAGS_VAL="$KCFLAGS_VAL -Wno-implicit-function-declaration"
+          KCFLAGS_VAL="$KCFLAGS_VAL -Wno-implicit-int"
+          KCFLAGS_VAL="$KCFLAGS_VAL -Wno-int-conversion"
+          KCFLAGS_VAL="$KCFLAGS_VAL -Wno-unused-function"
+          KCFLAGS_VAL="$KCFLAGS_VAL -Wno-gnu-offsetof-extensions"
+          KCFLAGS_VAL="$KCFLAGS_VAL -Wno-single-bit-bitfield-constant-conversion"
+          KCFLAGS_VAL="$KCFLAGS_VAL -Wno-array-parameter"
 
           echo "🔨 Building kernel..."
           echo "   KCFLAGS: $KCFLAGS_VAL"
@@ -405,29 +426,29 @@ jobs:
 
           # Configure for lisa
           cat > anykernel.sh << 'AKSH'
-          # AnyKernel3 Ramdisk Mod Script
-          # osm0sis @ xda-developers
+# AnyKernel3 Ramdisk Mod Script
+# osm0sis @ xda-developers
 
-          properties() { '
-          kernel.string=SukiSU-Ultra-ManualHook for Xiaomi 11 Lite NE 5G (lisa)
-          do.devicecheck=1
-          do.modules=0
-          do.systemless=1
-          do.cleanup=1
-          do.cleanuponabort=0
-          device.name1=lisa
-          device.name2=lisain
-          device.name3=lisanin
-          supported.versions=
-          supported.patchlevels=
-          '; }
+properties() { '
+kernel.string=SukiSU-Ultra-ManualHook for Xiaomi 11 Lite NE 5G (lisa)
+do.devicecheck=1
+do.modules=0
+do.systemless=1
+do.cleanup=1
+do.cleanuponabort=0
+device.name1=lisa
+device.name2=lisain
+device.name3=lisanin
+supported.versions=
+supported.patchlevels=
+'; }
 
-          . tools/ak3-core.sh;
+. tools/ak3-core.sh;
 
-          set_perm_recursive 0 0 755 644 $ramdisk/*;
-          dump_boot;
-          write_boot;
-          AKSH
+set_perm_recursive 0 0 755 644 $ramdisk/*;
+dump_boot;
+write_boot;
+AKSH
 
           # Copy kernel Image
           if [ -f $WORK_DIR/kernel_source/out/arch/$ARCH/boot/Image ]; then
@@ -487,7 +508,7 @@ jobs:
         run: |
           echo ""
           echo "╔══════════════════════════════════════════════════╗"
-          echo "║          BUILD SUMMARY — v9                      ║"
+          echo "║          BUILD SUMMARY — v10                     ║"
           echo "╚══════════════════════════════════════════════════╝"
           echo ""
           echo "  Device:          $DEVICE"
