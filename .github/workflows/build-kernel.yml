@@ -103,42 +103,42 @@ jobs:
           # susfs.h
           if [ ! -f include/linux/susfs.h ]; then
             cat > include/linux/susfs.h << 'STUB1'
-#ifndef _LINUX_SUSFS_H
-#define _LINUX_SUSFS_H
-#include <linux/types.h>
-/* Stub header — SUSFS not integrated for this build */
-#endif /* _LINUX_SUSFS_H */
-STUB1
-            echo "  ✅ Created include/linux/susfs.h (stub)"
-          else
-            echo "  ℹ️ include/linux/susfs.h already exists"
-          fi
-
-          # susfs_def.h
-          if [ ! -f include/linux/susfs_def.h ]; then
-            cat > include/linux/susfs_def.h << 'STUB2'
-#ifndef _LINUX_SUSFS_DEF_H
-#define _LINUX_SUSFS_DEF_H
-/* Stub header — SUSFS definitions not available */
-#endif /* _LINUX_SUSFS_DEF_H */
-STUB2
-            echo "  ✅ Created include/linux/susfs_def.h (stub)"
-          else
-            echo "  ℹ️ include/linux/susfs_def.h already exists"
-          fi
-
-          # susfs_redirect.h
-          if [ ! -f include/linux/susfs_redirect.h ]; then
-            cat > include/linux/susfs_redirect.h << 'STUB3'
-#ifndef _LINUX_SUSFS_REDIRECT_H
-#define _LINUX_SUSFS_REDIRECT_H
-/* Stub header — SUSFS redirect not available */
-#endif /* _LINUX_SUSFS_REDIRECT_H */
-STUB3
-            echo "  ✅ Created include/linux/susfs_redirect.h (stub)"
-          else
-            echo "  ℹ️ include/linux/susfs_redirect.h already exists"
-          fi
+          #ifndef _LINUX_SUSFS_H
+          #define _LINUX_SUSFS_H
+          #include <linux/types.h>
+          /* Stub header — SUSFS not integrated for this build */
+          #endif /* _LINUX_SUSFS_H */
+          STUB1
+                      echo "  ✅ Created include/linux/susfs.h (stub)"
+                    else
+                      echo "  ℹ️ include/linux/susfs.h already exists"
+                    fi
+          
+                    # susfs_def.h
+                    if [ ! -f include/linux/susfs_def.h ]; then
+                      cat > include/linux/susfs_def.h << 'STUB2'
+          #ifndef _LINUX_SUSFS_DEF_H
+          #define _LINUX_SUSFS_DEF_H
+          /* Stub header — SUSFS definitions not available */
+          #endif /* _LINUX_SUSFS_DEF_H */
+          STUB2
+                      echo "  ✅ Created include/linux/susfs_def.h (stub)"
+                    else
+                      echo "  ℹ️ include/linux/susfs_def.h already exists"
+                    fi
+          
+                    # susfs_redirect.h
+                    if [ ! -f include/linux/susfs_redirect.h ]; then
+                      cat > include/linux/susfs_redirect.h << 'STUB3'
+          #ifndef _LINUX_SUSFS_REDIRECT_H
+          #define _LINUX_SUSFS_REDIRECT_H
+          /* Stub header — SUSFS redirect not available */
+          #endif /* _LINUX_SUSFS_REDIRECT_H */
+          STUB3
+                      echo "  ✅ Created include/linux/susfs_redirect.h (stub)"
+                    else
+                      echo "  ℹ️ include/linux/susfs_redirect.h already exists"
+                    fi
 
       # ── 6. Apply manual hooks ───────────────────────────────
       - name: "🔩 Step 6: Apply manual hooks"
@@ -426,29 +426,29 @@ STUB3
 
           # Configure for lisa
           cat > anykernel.sh << 'AKSH'
-# AnyKernel3 Ramdisk Mod Script
-# osm0sis @ xda-developers
-
-properties() { '
-kernel.string=SukiSU-Ultra-ManualHook for Xiaomi 11 Lite NE 5G (lisa)
-do.devicecheck=1
-do.modules=0
-do.systemless=1
-do.cleanup=1
-do.cleanuponabort=0
-device.name1=lisa
-device.name2=lisain
-device.name3=lisanin
-supported.versions=
-supported.patchlevels=
-'; }
-
-. tools/ak3-core.sh;
-
-set_perm_recursive 0 0 755 644 $ramdisk/*;
-dump_boot;
-write_boot;
-AKSH
+          # AnyKernel3 Ramdisk Mod Script
+          # osm0sis @ xda-developers
+          
+          properties() { '
+          kernel.string=SukiSU-Ultra-ManualHook for Xiaomi 11 Lite NE 5G (lisa)
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=1
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=lisa
+          device.name2=lisain
+          device.name3=lisanin
+          supported.versions=
+          supported.patchlevels=
+          '; }
+          
+          . tools/ak3-core.sh;
+          
+          set_perm_recursive 0 0 755 644 $ramdisk/*;
+          dump_boot;
+          write_boot;
+          AKSH
 
           # Copy kernel Image
           if [ -f $WORK_DIR/kernel_source/out/arch/$ARCH/boot/Image ]; then
