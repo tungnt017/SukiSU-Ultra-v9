@@ -13,53 +13,6 @@ fi
 HOOKS_APPLIED=0
 HOOKS_FAILED=0
 
-# ── Helper functions ──────────────────────────────────────
-apply_hook() {
-  local FILE="$1"
-  local HOOK_NAME="$2"
-  local PATTERN="$3"
-  local INSERT_CODE="$4"
-  local POSITION="${5:-before}"  # before or after
-
-  if [ ! -f "$FILE" ]; then
-    echo "  ❌ File not found: $FILE"
-    HOOKS_FAILED=$((HOOKS_FAILED + 1))
-    return 1
-  fi
-
-  # Check if already applied
-  if grep -q "CONFIG_KSU.*CONFIG_KSU_MANUAL_HOOK" "$FILE" 2>/dev/null; then
-    echo "  ℹ️ $HOOK_NAME already applied, skipping"
-    HOOKS_APPLIED=$((HOOKS_APPLIED + 1))
-    return 0
-  fi
-
-  # Find pattern line
-  LINE_NUM=$(grep -n "$PATTERN" "$FILE" | head -1 | cut -d: -f1)
-  if [ -z "$LINE_NUM" ]; then
-    echo "  ❌ Pattern not found in $FILE: $PATTERN"
-    HOOKS_FAILED=$((HOOKS_FAILED + 1))
-    return 1
-  fi
-
-  echo "  📍 Found pattern at line $LINE_NUM"
-
-  if [ "$POSITION" = "before" ]; then
-    sed -i "${LINE_NUM}i\\${INSERT_CODE}" "$FILE"
-  else
-    sed -i "${LINE_NUM}a\\${INSERT_CODE}" "$FILE"
-  fi
-
-  # Verify
-  if grep -q "CONFIG_KSU.*CONFIG_KSU_MANUAL_HOOK\|ksu_handle" "$FILE" 2>/dev/null; then
-    echo "  ✅ $HOOK_NAME applied successfully"
-    HOOKS_APPLIED=$((HOOKS_APPLIED + 1))
-  else
-    echo "  ❌ $HOOK_NAME verification failed"
-    HOOKS_FAILED=$((HOOKS_FAILED + 1))
-  fi
-}
-
 echo "════════════════════════════════════════════════════"
 echo "🔩 SukiSU-Ultra Manual Hook Inserter"
 echo "════════════════════════════════════════════════════"
@@ -68,7 +21,6 @@ echo ""
 # ── Hook 1: fs/exec.c ────────────────────────────────────
 echo "📌 Hook 1/5: fs/exec.c (do_execve)"
 if [ -f fs/exec.c ] && ! grep -q "ksu_handle_execveat" fs/exec.c 2>/dev/null; then
-  # Insert extern declarations before do_execve
   awk '
   /^int do_execve\(/ && !done {
     print "#if defined(CONFIG_KSU) && defined(CONFIG_KSU_MANUAL_HOOK)"
@@ -84,7 +36,6 @@ if [ -f fs/exec.c ] && ! grep -q "ksu_handle_execveat" fs/exec.c 2>/dev/null; th
   { print }
   ' fs/exec.c > fs/exec.c.tmp && mv fs/exec.c.tmp fs/exec.c
 
-  # Insert hook call inside do_execve (after envp initialization)
   awk '
   /struct user_arg_ptr envp = \{/ && !hook1_done {
     print
@@ -102,7 +53,6 @@ if [ -f fs/exec.c ] && ! grep -q "ksu_handle_execveat" fs/exec.c 2>/dev/null; th
   { print }
   ' fs/exec.c > fs/exec.c.tmp && mv fs/exec.c.tmp fs/exec.c
 
-  # Insert sucompat hook in compat_do_execve
   awk '
   /^int compat_do_execve\(/ { in_compat=1 }
   in_compat && /return do_execveat_common/ && !hook2_done {
