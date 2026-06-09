@@ -1,0 +1,720 @@
+# ============================================================================
+# SukiSU-Ultra Kernel Build for Xiaomi 11 Lite NE 5G (lisa)
+# Kernel: 5.4.x (QGKI) — PixelExperience / Android 13
+# SoC: Qualcomm SM7325 Snapdragon 778G (Lahaina platform)
+# Method: Manual Hook (builtin) + SUSFS (enabled by default)
+# ============================================================================
+
+name: Build SukiSU-Ultra Kernel (Lisa 5.4 - Manual Hook + SUSFS)
+
+on:
+  workflow_dispatch:
+    inputs:
+      # ── Kernel Source ──────────────────────────────────────────────────
+      KERNEL_SOURCE:
+        description: "Kernel source repository URL"
+        required: true
+        default: "https://github.com/PixelExperience-Devices/kernel_xiaomi_lisa"
+      KERNEL_BRANCH:
+        description: "Kernel source branch"
+        required: true
+        default: "thirteen"
+
+      # ── SukiSU-Ultra ──────────────────────────────────────────────────
+      SUKISU_BRANCH:
+        description: "SukiSU-Ultra branch (builtin enables SUSFS by default)"
+        required: true
+        default: "builtin"
+
+      # ── SUSFS ──────────────────────────────────────────────────────────
+      SUSFS_ENABLED:
+        description: "Enable SUSFS patches"
+        required: true
+        default: "true"
+        type: boolean
+      SUSFS_SOURCE:
+        description: "SUSFS4KSU source repository URL"
+        required: true
+        default: "https://gitlab.com/simonpunk/susfs4ksu.git"
+      SUSFS_BRANCH:
+        description: "SUSFS branch (match your kernel version)"
+        required: true
+        default: "gki-android13-5.4"
+
+      # ── Defconfig ─────────────────────────────────────────────────────
+      DEFCONFIG:
+        description: "Kernel defconfig file name"
+        required: true
+        default: "vendor/lahaina-qgki_defconfig"
+
+      # ── Toolchain ─────────────────────────────────────────────────────
+      CLANG_URL:
+        description: "Clang toolchain archive URL"
+        required: true
+        default: "https://github.com/ZyCromerZ/Clang/releases/download/19.0.0git-20240112-release/Clang-19.0.0git-20240112.tar.gz"
+
+      # ── AnyKernel3 ────────────────────────────────────────────────────
+      ANYKERNEL3_SOURCE:
+        description: "AnyKernel3 repository URL"
+        required: true
+        default: "https://github.com/osm0sis/AnyKernel3"
+
+jobs:
+  build:
+    name: Build Kernel (Lisa 5.4 QGKI)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      # ================================================================
+      # Step 1: Maximize disk space on the runner
+      # ================================================================
+      - name: "🧹 Maximize build space"
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: false
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      # ================================================================
+      # Step 2: Install build dependencies
+      # ================================================================
+      - name: "📦 Install build dependencies"
+        run: |
+          echo "========== Installing build dependencies =========="
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            build-essential bc curl git zip unzip \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
+            binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi \
+            libssl-dev libfl-dev flex bison \
+            python3 python-is-python3 \
+            libelf-dev cpio lld llvm
+          echo "========== Dependencies installed =========="
+
+      # ================================================================
+      # Step 3: Clone kernel source (PE kernel_xiaomi_lisa, branch thirteen)
+      # ================================================================
+      - name: "📥 Clone kernel source"
+        run: |
+          echo "========== Cloning kernel source =========="
+          echo "Repository: ${{ github.event.inputs.KERNEL_SOURCE }}"
+          echo "Branch:     ${{ github.event.inputs.KERNEL_BRANCH }}"
+          git clone --depth=1 \
+            -b "${{ github.event.inputs.KERNEL_BRANCH }}" \
+            "${{ github.event.inputs.KERNEL_SOURCE }}" \
+            kernel_source
+          cd kernel_source
+          echo "Kernel source cloned successfully."
+          echo "HEAD: $(git rev-parse --short HEAD)"
+          # Verify kernel version is 5.4
+          if [ -f "Makefile" ]; then
+            VERSION=$(grep "^VERSION" Makefile | head -1 | awk '{print $3}')
+            PATCHLEVEL=$(grep "^PATCHLEVEL" Makefile | head -1 | awk '{print $3}')
+            echo "Kernel version: $VERSION.$PATCHLEVEL"
+          fi
+
+      # ================================================================
+      # Step 4: Integrate SukiSU-Ultra (builtin → SUSFS enabled by default)
+      # ================================================================
+      - name: "🔧 Integrate SukiSU-Ultra (builtin + SUSFS)"
+        working-directory: kernel_source
+        run: |
+          echo "========== Integrating SukiSU-Ultra =========="
+          echo "Mode: ${{ github.event.inputs.SUKISU_BRANCH }}"
+          # The builtin mode now enables SUSFS by default
+          curl -LSs \
+            "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" \
+            | bash -s ${{ github.event.inputs.SUKISU_BRANCH }}
+
+          echo ""
+          echo "========== SukiSU-Ultra integrated =========="
+          # Verify KernelSU directory exists
+          if [ -d "KernelSU" ]; then
+            echo "✅ KernelSU directory found."
+            ls -la KernelSU/
+          else
+            echo "❌ ERROR: KernelSU directory not found!"
+            exit 1
+          fi
+          # Verify driver symlink
+          DRIVER_DIR=""
+          if [ -d "common/drivers/kernelsu" ] || [ -L "common/drivers/kernelsu" ]; then
+            DRIVER_DIR="common/drivers"
+          elif [ -d "drivers/kernelsu" ] || [ -L "drivers/kernelsu" ]; then
+            DRIVER_DIR="drivers"
+          fi
+          if [ -n "$DRIVER_DIR" ]; then
+            echo "✅ KernelSU driver symlink found in $DRIVER_DIR/"
+          else
+            echo "❌ ERROR: KernelSU driver symlink not found!"
+            exit 1
+          fi
+
+      # ================================================================
+      # Step 5: Clone and apply SUSFS kernel patches
+      # ================================================================
+      - name: "🛡️ Apply SUSFS kernel patches"
+        if: ${{ github.event.inputs.SUSFS_ENABLED == 'true' }}
+        working-directory: kernel_source
+        run: |
+          echo "========== Applying SUSFS kernel patches =========="
+          echo "SUSFS Source: ${{ github.event.inputs.SUSFS_SOURCE }}"
+          echo "SUSFS Branch: ${{ github.event.inputs.SUSFS_BRANCH }}"
+
+          # Clone SUSFS
+          git clone --depth=1 \
+            -b "${{ github.event.inputs.SUSFS_BRANCH }}" \
+            "${{ github.event.inputs.SUSFS_SOURCE }}" \
+            susfs4ksu
+
+          echo "--- SUSFS repo contents ---"
+          ls -la susfs4ksu/
+
+          # Copy SUSFS kernel patches into source tree
+          if [ -d "susfs4ksu/kernel_patches" ]; then
+            SUSFS_PATCHES="susfs4ksu/kernel_patches"
+
+            # Copy susfs source files into kernel tree
+            if [ -d "$SUSFS_PATCHES/fs" ]; then
+              cp -rv $SUSFS_PATCHES/fs/* fs/ 2>/dev/null || true
+            fi
+            if [ -d "$SUSFS_PATCHES/include" ]; then
+              cp -rv $SUSFS_PATCHES/include/* include/ 2>/dev/null || true
+            fi
+
+            # Apply .patch files to kernel tree
+            for patch in $SUSFS_PATCHES/*.patch; do
+              if [ -f "$patch" ]; then
+                echo "Applying patch: $patch"
+                git apply --verbose "$patch" || \
+                git apply --verbose --3way "$patch" || \
+                  echo "⚠️ Warning: Patch $patch may need manual resolution"
+              fi
+            done
+
+            # Apply KernelSU-specific SUSFS patches
+            if [ -d "susfs4ksu/kernel_patches/KernelSU" ]; then
+              cd KernelSU
+              for patch in ../susfs4ksu/kernel_patches/KernelSU/*.patch; do
+                if [ -f "$patch" ]; then
+                  echo "Applying KernelSU patch: $patch"
+                  git apply --verbose "$patch" || \
+                  git apply --verbose --3way "$patch" || \
+                    echo "⚠️ Warning: KernelSU patch $patch may need manual resolution"
+                fi
+              done
+              cd ..
+            fi
+
+            echo "✅ SUSFS patches applied."
+          else
+            echo "⚠️ No kernel_patches directory in SUSFS repo. Listing contents:"
+            ls -laR susfs4ksu/
+          fi
+
+      # ================================================================
+      # Step 6: Apply Manual Hook patches (kernel 5.4 — 6 hook sites)
+      # Ref: ReSukiSU manual-integrate guide + SukiSU-Ultra docs
+      # ================================================================
+      - name: "🪝 Apply Manual Hook patches (kernel 5.4)"
+        working-directory: kernel_source
+        run: |
+          echo "========== Applying Manual Hook patches (kernel 5.4) =========="
+          echo "Hook sites: fs/exec.c, fs/open.c, fs/read_write.c, fs/stat.c,"
+          echo "            drivers/input/input.c, kernel/reboot.c"
+          echo ""
+
+          # ────────────────────────────────────────────────────────────────
+          # [1/6] fs/exec.c — Hook do_execve / do_execveat
+          # ────────────────────────────────────────────────────────────────
+          echo "[1/6] Patching fs/exec.c ..."
+
+          # Add extern declaration before do_execve function
+          sed -i '/^int do_execve(struct filename \*filename,$/i\
+          #ifdef CONFIG_KSU_MANUAL_HOOK\
+          extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,\
+          \t\t\t\tvoid *argv, void *envp, int *flags);\
+          #endif' fs/exec.c
+
+          # Insert hook call inside do_execveat_common (kernel 5.4 uses this)
+          # Hook right after variable declarations, before the main logic
+          sed -i '/static int do_execveat_common(int fd, struct filename \*filename,/,/retval = count(argv, MAX_ARG_STRINGS);/{
+            /retval = count(argv, MAX_ARG_STRINGS);/i\
+          #ifdef CONFIG_KSU_MANUAL_HOOK\
+          \tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\
+          #endif
+          }' fs/exec.c
+
+          # Verify
+          if grep -q "ksu_handle_execveat" fs/exec.c; then
+            echo "  ✅ fs/exec.c patched successfully"
+          else
+            echo "  ❌ fs/exec.c patch FAILED"
+            echo "  Trying alternative: patch do_execve directly..."
+            sed -i '/^int do_execve(/,/^{/{
+              /^{/a\
+          #ifdef CONFIG_KSU_MANUAL_HOOK\
+          \t{ int fd = AT_FDCWD; int flags = 0;\
+          \tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags); }\
+          #endif
+            }' fs/exec.c
+            grep -q "ksu_handle_execveat" fs/exec.c && echo "  ✅ Alternative patch applied" || { echo "  ❌ FATAL: fs/exec.c hook failed!"; exit 1; }
+          fi
+
+          # ────────────────────────────────────────────────────────────────
+          # [2/6] fs/open.c — Hook do_faccessat
+          # ────────────────────────────────────────────────────────────────
+          echo "[2/6] Patching fs/open.c ..."
+
+          # Add extern declaration
+          sed -i '/^long do_faccessat(int dfd/i\
+          #ifdef CONFIG_KSU_MANUAL_HOOK\
+          extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,\
+          \t\t\t\tint *mode, int *flags);\
+          #endif' fs/open.c
+
+          # Insert hook call at the start of do_faccessat
+          sed -i '/^long do_faccessat(int dfd, const char __user \*filename, int mode)/,/^{/{
+            /^{/a\
+          #ifdef CONFIG_KSU_MANUAL_HOOK\
+          \tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\
+          #endif
+          }' fs/open.c
+
+          # Verify
+          if grep -q "ksu_handle_faccessat" fs/open.c; then
+            echo "  ✅ fs/open.c patched successfully"
+          else
+            echo "  ⚠️ fs/open.c — trying SYSCALL_DEFINE3 fallback..."
+            sed -i '/SYSCALL_DEFINE3(faccessat/,/^{/{
+              /^{/a\
+          #ifdef CONFIG_KSU_MANUAL_HOOK\
+          \tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\
+          #endif
+            }' fs/open.c
+            grep -q "ksu_handle_faccessat" fs/open.c && echo "  ✅ Fallback applied" || echo "  ⚠️ fs/open.c may need manual patching"
+          fi
+
+          # ────────────────────────────────────────────────────────────────
+          # [3/6] fs/read_write.c — Hook vfs_read
+          # ────────────────────────────────────────────────────────────────
+          echo "[3/6] Patching fs/read_write.c ..."
+
+          # Add extern declaration
+          sed -i '/^ssize_t vfs_read(struct file \*file/i\
+          #ifdef CONFIG_KSU_MANUAL_HOOK\
+          extern int ksu_handle_vfs_read(struct file **file_ptr,\
+          \t\t\t\tchar __user **buf_ptr, size_t *count_ptr, loff_t **pos);\
+          #endif' fs/read_write.c
+
+          # Insert hook call at the start of vfs_read
+          sed -i '/^ssize_t vfs_read(struct file \*file/,/^{/{
+            /^{/a\
+          #ifdef CONFIG_KSU_MANUAL_HOOK\
+          \tksu_handle_vfs_read(&file, &buf, &count, &pos);\
+          #endif
+          }' fs/read_write.c
+
+          # Verify
+          if grep -q "ksu_handle_vfs_read" fs/read_write.c; then
+            echo "  ✅ fs/read_write.c patched successfully"
+          else
+            echo "  ⚠️ fs/read_write.c may need manual patching"
+          fi
+
+          # ────────────────────────────────────────────────────────────────
+          # [4/6] fs/stat.c — Hook newfstatat (SYSCALL_DEFINE4)
+          # ────────────────────────────────────────────────────────────────
+          echo "[4/6] Patching fs/stat.c ..."
+
+          # Add extern declarations at the top of the file (after includes)
+          sed -i '/#include <linux\/syscalls.h>/a\
+          #ifdef CONFIG_KSU_MANUAL_HOOK\
+          extern int ksu_handle_stat(int *dfd, const char __user **filename_user,\
+          \t\t\t\tint *flags);\
+          #endif' fs/stat.c
+
+          # Hook newfstatat: SYSCALL_DEFINE4(newfstatat, ...)
+          sed -i '/SYSCALL_DEFINE4(newfstatat/,/struct kstat stat;/{
+            /struct kstat stat;/a\
+          #ifdef CONFIG_KSU_MANUAL_HOOK\
+          \tksu_handle_stat(&dfd, &filename, &flag);\
+          #endif
+          }' fs/stat.c
+
+          # Verify
+          if grep -q "ksu_handle_stat" fs/stat.c; then
+            echo "  ✅ fs/stat.c patched successfully"
+          else
+            echo "  ⚠️ fs/stat.c — trying vfs_statx fallback..."
+            sed -i '/int vfs_statx(int dfd/,/^{/{
+              /^{/a\
+          #ifdef CONFIG_KSU_MANUAL_HOOK\
+          \tksu_handle_stat(&dfd, &filename, &flags);\
+          #endif
+            }' fs/stat.c
+            grep -q "ksu_handle_stat" fs/stat.c && echo "  ✅ Fallback applied" || echo "  ⚠️ fs/stat.c may need manual patching"
+          fi
+
+          # ────────────────────────────────────────────────────────────────
+          # [5/6] drivers/input/input.c — Safe mode volume key trigger
+          # ────────────────────────────────────────────────────────────────
+          echo "[5/6] Patching drivers/input/input.c ..."
+
+          # Add extern declaration
+          sed -i '/#include <linux\/input.h>/a\
+          #ifdef CONFIG_KSU_MANUAL_HOOK\
+          extern void ksu_handle_input_handle_event(unsigned int *type,\
+          \t\t\t\tunsigned int *code, int *value);\
+          #endif' drivers/input/input.c
+
+          # Hook input_handle_event
+          sed -i '/static void input_handle_event/,/^{/{
+            /^{/a\
+          #ifdef CONFIG_KSU_MANUAL_HOOK\
+          \tksu_handle_input_handle_event(&type, &code, &value);\
+          #endif
+          }' drivers/input/input.c
+
+          # Verify
+          if grep -q "ksu_handle_input_handle_event" drivers/input/input.c; then
+            echo "  ✅ drivers/input/input.c patched successfully"
+          else
+            echo "  ⚠️ drivers/input/input.c may need manual patching"
+          fi
+
+          # ────────────────────────────────────────────────────────────────
+          # [6/6] kernel/reboot.c — Optional: reboot hook
+          # ────────────────────────────────────────────────────────────────
+          echo "[6/6] Patching kernel/reboot.c (optional) ..."
+
+          if [ -f "kernel/reboot.c" ]; then
+            sed -i '/#include <linux\/reboot.h>/a\
+          #ifdef CONFIG_KSU_MANUAL_HOOK\
+          extern void ksu_handle_reboot(void);\
+          #endif' kernel/reboot.c
+
+            sed -i '/SYSCALL_DEFINE4(__reboot/,/^{/{
+              /^{/a\
+          #ifdef CONFIG_KSU_MANUAL_HOOK\
+          \tksu_handle_reboot();\
+          #endif
+            }' kernel/reboot.c
+
+            if grep -q "ksu_handle_reboot" kernel/reboot.c; then
+              echo "  ✅ kernel/reboot.c patched successfully"
+            else
+              echo "  ⚠️ kernel/reboot.c — optional hook, skipping"
+            fi
+          else
+            echo "  ⚠️ kernel/reboot.c not found, skipping (optional)"
+          fi
+
+          echo ""
+          echo "========== Manual Hook patches complete =========="
+
+      # ================================================================
+      # Step 7: Update defconfig with KSU + SUSFS configs
+      # ================================================================
+      - name: "⚙️ Update defconfig"
+        working-directory: kernel_source
+        run: |
+          echo "========== Updating defconfig =========="
+          DEFCONFIG_PATH="arch/arm64/configs/${{ github.event.inputs.DEFCONFIG }}"
+          echo "Defconfig: $DEFCONFIG_PATH"
+
+          if [ ! -f "$DEFCONFIG_PATH" ]; then
+            echo "⚠️ Defconfig not found at $DEFCONFIG_PATH"
+            echo "Available defconfigs:"
+            find arch/arm64/configs/ -name "*lisa*" -o -name "*lahaina*" -o -name "*qgki*" | head -20
+            echo "All vendor defconfigs:"
+            ls arch/arm64/configs/vendor/ 2>/dev/null || ls arch/arm64/configs/ | head -30
+            echo ""
+            echo "Trying fallback defconfigs..."
+            for dc in "vendor/lisa_defconfig" "vendor/lahaina-qgki_defconfig" "vendor/lahaina_defconfig" "lisa_defconfig"; do
+              if [ -f "arch/arm64/configs/$dc" ]; then
+                DEFCONFIG_PATH="arch/arm64/configs/$dc"
+                echo "✅ Found fallback: $DEFCONFIG_PATH"
+                break
+              fi
+            done
+          fi
+
+          if [ ! -f "$DEFCONFIG_PATH" ]; then
+            echo "❌ ERROR: No suitable defconfig found!"
+            exit 1
+          fi
+
+          # ── KernelSU core configs ──────────────────────────────────
+          echo "" >> "$DEFCONFIG_PATH"
+          echo "# ── KernelSU (SukiSU-Ultra) — Manual Hook ──" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_KSU=y" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_KSU_MANUAL_HOOK=y" >> "$DEFCONFIG_PATH"
+
+          # Disable KPROBES (Manual Hook does NOT use kprobes)
+          sed -i 's/CONFIG_KPROBES=y/# CONFIG_KPROBES is not set/g' "$DEFCONFIG_PATH"
+          sed -i 's/CONFIG_HAVE_KPROBES=y/# CONFIG_HAVE_KPROBES is not set/g' "$DEFCONFIG_PATH"
+
+          # Required symbol resolution
+          echo "CONFIG_KALLSYMS=y" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_KALLSYMS_ALL=y" >> "$DEFCONFIG_PATH"
+
+          # ── SUSFS configs (all features) ───────────────────────────
+          echo "" >> "$DEFCONFIG_PATH"
+          echo "# ── SUSFS ──" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_KSU_SUSFS=y" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_KSU_SUSFS_SUS_OVERLAYFS=y" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_KSU_SUSFS_SUS_SU=y" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y" >> "$DEFCONFIG_PATH"
+
+          echo ""
+          echo "--- Defconfig tail (last 25 lines) ---"
+          tail -n 25 "$DEFCONFIG_PATH"
+          echo "========== Defconfig updated =========="
+
+      # ================================================================
+      # Step 8: Setup Clang toolchain
+      # ================================================================
+      - name: "🔨 Setup Clang toolchain"
+        run: |
+          echo "========== Setting up Clang toolchain =========="
+          mkdir -p toolchain
+          echo "Downloading: ${{ github.event.inputs.CLANG_URL }}"
+          curl -L "${{ github.event.inputs.CLANG_URL }}" | tar -xz -C toolchain/
+          echo ""
+          # Find clang binary
+          CLANG_BIN=$(find toolchain/ -name "clang" -type f | head -1)
+          if [ -n "$CLANG_BIN" ]; then
+            CLANG_DIR=$(dirname "$CLANG_BIN")
+            echo "✅ Clang found at: $CLANG_DIR"
+            "$CLANG_BIN" --version
+          else
+            echo "❌ ERROR: Clang binary not found!"
+            find toolchain/ -maxdepth 3 -type f | head -20
+            exit 1
+          fi
+          echo "========== Toolchain ready =========="
+
+      # ================================================================
+      # Step 9: Build the kernel
+      # ================================================================
+      - name: "🏗️ Build kernel"
+        working-directory: kernel_source
+        run: |
+          echo "========== Starting kernel build =========="
+
+          # Locate Clang
+          CLANG_BIN=$(find ../toolchain/ -name "clang" -type f | head -1)
+          CLANG_DIR=$(dirname "$CLANG_BIN")
+          export PATH="$CLANG_DIR:$PATH"
+
+          # Build arguments for kernel 5.4 QGKI (SM7325 / Lahaina)
+          MAKE_ARGS=(
+            ARCH=arm64
+            SUBARCH=arm64
+            CC=clang
+            CROSS_COMPILE=aarch64-linux-gnu-
+            CROSS_COMPILE_COMPAT=arm-linux-gnueabi-
+            CLANG_TRIPLE=aarch64-linux-gnu-
+            O=out
+          )
+
+          # Generate .config from defconfig
+          echo "--- make defconfig ---"
+          make "${MAKE_ARGS[@]}" ${{ github.event.inputs.DEFCONFIG }} 2>&1 | tee build_defconfig.log
+
+          # Verify KSU + SUSFS configs in generated .config
+          echo ""
+          echo "--- Verifying KSU + SUSFS configs in .config ---"
+          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_KALLSYMS" out/.config || true
+          echo ""
+
+          # Build kernel image
+          echo "--- make (full build) ---"
+          NPROC=$(nproc --all)
+          echo "Building with $NPROC threads..."
+          make "${MAKE_ARGS[@]}" -j"$NPROC" 2>&1 | tee build_kernel.log
+
+          echo "========== Kernel build complete =========="
+
+      # ================================================================
+      # Step 10: Verify build output
+      # ================================================================
+      - name: "✅ Verify build output"
+        working-directory: kernel_source
+        run: |
+          echo "========== Verifying build output =========="
+
+          # Check for kernel image
+          IMAGE_FOUND=false
+          for img in out/arch/arm64/boot/Image.gz out/arch/arm64/boot/Image out/arch/arm64/boot/Image.gz-dtb; do
+            if [ -f "$img" ]; then
+              echo "✅ Found: $img ($(du -h "$img" | cut -f1))"
+              IMAGE_FOUND=true
+            fi
+          done
+
+          if [ "$IMAGE_FOUND" = false ]; then
+            echo "❌ ERROR: No kernel image found!"
+            echo "--- Last 100 lines of build log ---"
+            tail -100 build_kernel.log
+            exit 1
+          fi
+
+          # Check for DTB/DTBO
+          echo ""
+          echo "--- DTB/DTBO files ---"
+          find out/arch/arm64/boot -name "*.dtb" -o -name "*.dtbo" 2>/dev/null | head -20 || echo "No DTB files found"
+
+          # Verify KSU driver compiled
+          if find out/ -path "*/kernelsu*" -name "*.o" 2>/dev/null | head -1 | grep -q .; then
+            echo "✅ KernelSU driver compiled"
+          else
+            echo "⚠️ Warning: KernelSU driver objects not found in expected path"
+            find out/ -path "*kernelsu*" -type f 2>/dev/null | head -10
+          fi
+
+          echo "========== Verification complete =========="
+
+      # ================================================================
+      # Step 11: Package with AnyKernel3
+      # ================================================================
+      - name: "📦 Package with AnyKernel3"
+        run: |
+          echo "========== Packaging with AnyKernel3 =========="
+
+          git clone --depth=1 "${{ github.event.inputs.ANYKERNEL3_SOURCE }}" AnyKernel3
+
+          cd AnyKernel3
+
+          # Clean example files
+          rm -rf modules patch ramdisk LICENSE README.md .git
+
+          # Configure anykernel.sh for lisa (Snapdragon 778G / SM7325)
+          cat > anykernel.sh << 'ANYKERNEL_EOF'
+# AnyKernel3 Ramdisk Mod Script
+# osm0sis @ xda-developers
+# SukiSU-Ultra for Xiaomi 11 Lite NE 5G (lisa) — Kernel 5.4
+
+properties() { '
+kernel.string=SukiSU-Ultra Kernel for Lisa (5.4 QGKI)
+do.devicecheck=1
+do.modules=0
+do.systemless=1
+do.cleanup=1
+do.cleanuponabort=0
+device.name1=lisa
+device.name2=lisain
+device.name3=lisa_global
+supported.versions=
+supported.patchlevels=
+'; }
+
+# Shell variables
+block=/dev/block/bootdevice/by-name/boot;
+is_slot_device=auto;
+ramdisk_compression=auto;
+patch_vbmeta_flag=auto;
+
+. tools/ak3-core.sh;
+
+set_perm_recursive 0 0 755 644 $ramdisk/*;
+
+dump_boot;
+write_boot;
+ANYKERNEL_EOF
+
+          # Copy kernel image (prefer Image.gz for 5.4 QGKI)
+          cd ..
+          for img in Image.gz Image.gz-dtb Image; do
+            if [ -f "kernel_source/out/arch/arm64/boot/$img" ]; then
+              cp "kernel_source/out/arch/arm64/boot/$img" AnyKernel3/
+              echo "✅ Copied $img"
+              break
+            fi
+          done
+
+          # Copy DTB if exists
+          DTB=$(find kernel_source/out/arch/arm64/boot/dts -name "*.dtb" 2>/dev/null | head -1)
+          if [ -n "$DTB" ]; then
+            cp "$DTB" AnyKernel3/dtb
+            echo "✅ Copied dtb"
+          fi
+
+          # Copy DTBO if exists
+          DTBO=$(find kernel_source/out/arch/arm64/boot -name "*.dtbo" 2>/dev/null | head -1)
+          if [ -n "$DTBO" ]; then
+            cp "$DTBO" AnyKernel3/dtbo.img
+            echo "✅ Copied dtbo.img"
+          fi
+
+          # Create flashable ZIP
+          cd AnyKernel3
+          TIMESTAMP=$(date +%Y%m%d_%H%M)
+          ZIP_NAME="SukiSU-Ultra_lisa_5.4_ManualHook_SUSFS_${TIMESTAMP}.zip"
+          zip -r9 "../$ZIP_NAME" * -x '*.git*'
+          echo "✅ Created: $ZIP_NAME"
+
+          # Export for artifact upload
+          echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
+          echo "ZIP_PATH=$(realpath ../$ZIP_NAME)" >> $GITHUB_ENV
+
+          echo "========== Packaging complete =========="
+
+      # ================================================================
+      # Step 12: Upload build artifacts
+      # ================================================================
+      - name: "📤 Upload flashable ZIP"
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ZIP_NAME }}
+          path: ${{ env.ZIP_PATH }}
+          retention-days: 7
+
+      - name: "📤 Upload build logs"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            kernel_source/build_defconfig.log
+            kernel_source/build_kernel.log
+          retention-days: 7
+
+      # ================================================================
+      # Step 13: Build summary
+      # ================================================================
+      - name: "📋 Build Summary"
+        if: always()
+        run: |
+          echo "============================================"
+          echo "  SukiSU-Ultra Kernel Build Summary"
+          echo "============================================"
+          echo "  Device:       Xiaomi 11 Lite NE 5G (lisa)"
+          echo "  SoC:          Snapdragon 778G (SM7325)"
+          echo "  Kernel:       5.4.x QGKI"
+          echo "  Source:       ${{ github.event.inputs.KERNEL_SOURCE }}"
+          echo "  Branch:       ${{ github.event.inputs.KERNEL_BRANCH }}"
+          echo "  Hook Method:  Manual Hook (6 sites)"
+          echo "  SukiSU Mode:  ${{ github.event.inputs.SUKISU_BRANCH }}"
+          echo "  SUSFS:        ${{ github.event.inputs.SUSFS_ENABLED }}"
+          echo "  SUSFS Branch: ${{ github.event.inputs.SUSFS_BRANCH }}"
+          echo "  Defconfig:    ${{ github.event.inputs.DEFCONFIG }}"
+          echo "  Toolchain:    Clang (ZyCromerZ 19)"
+          echo "  Artifact:     ${{ env.ZIP_NAME }}"
+          echo "============================================"
