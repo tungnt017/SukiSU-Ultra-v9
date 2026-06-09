@@ -12,6 +12,11 @@ on:
         required: true
         default: "tungnt017/SukiSU-Ultra-v9"
         type: string
+      module_zip_url:
+        description: "🔗 Module ZIP URL (optional, e.g. KernelSU module)"
+        required: false
+        default: ""
+        type: string
 
 jobs:
   fix-repack:
@@ -61,22 +66,45 @@ jobs:
             grep -q "$p" anykernel.sh 2>/dev/null && echo "  ✅ $p" || echo "  ❌ $p MISSING"
           done
 
-      - name: "📦 Step 5: Collect modules"
+      - name: "📦 Step 5: Download & collect modules"
         run: |
           cd work
           mkdir -p repack/modules/vendor/lib/modules
           MOD_COUNT=0
+
+          # --- Download modules from ZIP URL (if provided) ---
+          MODULE_URL="${{ inputs.module_zip_url }}"
+          if [ -n "$MODULE_URL" ]; then
+            echo "📥 Downloading module ZIP from URL..."
+            curl -fSL "$MODULE_URL" -o /tmp/module_dl.zip
+            mkdir -p /tmp/module_extract
+            unzip -o /tmp/module_dl.zip -d /tmp/module_extract/
+            echo "📋 Contents of downloaded ZIP:"
+            find /tmp/module_extract/ -type f | sort
+            while IFS= read -r ko; do
+              cp "$ko" repack/modules/vendor/lib/modules/
+              echo "  ✅ (url) $(basename "$ko")"
+              MOD_COUNT=$((MOD_COUNT+1))
+            done < <(find /tmp/module_extract/ -name "*.ko" -type f 2>/dev/null)
+            rm -rf /tmp/module_dl.zip /tmp/module_extract
+          fi
+
+          # --- Collect .ko from build artifacts ---
           while IFS= read -r ko; do
             cp "$ko" repack/modules/vendor/lib/modules/
+            echo "  ✅ (artifact) $(basename "$ko")"
             MOD_COUNT=$((MOD_COUNT+1))
           done < <(find ./artifacts/ -name "*.ko" -type f 2>/dev/null)
+
           if [ "$MOD_COUNT" -eq 0 ]; then
-            echo "⚠️ No .ko modules in artifacts"
+            echo "⚠️ No .ko modules found (artifacts + URL)"
             rm -rf repack/modules
           else
-            echo "✅ $MOD_COUNT modules found"
+            echo "✅ Total $MOD_COUNT modules collected"
+            ls -la repack/modules/vendor/lib/modules/
           fi
           echo "MOD_COUNT=$MOD_COUNT" >> $GITHUB_ENV
+
 
       - name: "✅ Step 6: Write FIXED anykernel.sh"
         run: |
@@ -153,4 +181,4 @@ jobs:
           echo "  Modules: ${{ env.MOD_COUNT }}"
           echo ""
           echo "  📱 Flash: adb sideload ${{ env.ZIP_NAME }}"
-          [ "${{ env.MOD_COUNT }}" -eq 0 ] && echo "  ⚠️ No modules — touch may not work. Rebuild with v13."
+          [ "${{ env.MOD_COUNT }}" -eq 0 ] && echo "  ⚠️ No modules — touch may not work. Rebuild with v13." || true
