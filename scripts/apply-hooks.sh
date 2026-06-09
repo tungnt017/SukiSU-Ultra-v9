@@ -2,11 +2,9 @@
 set -euo pipefail
 OPTIONAL=false; [ "${1:-}" = "--optional" ] && OPTIONAL=true
 OK=0; FAIL=0
-
 echo "🔩 SukiSU-Ultra Manual Hook Inserter"
 echo ""
 
-# Hook 1: fs/exec.c
 echo "📌 Hook 1/5: fs/exec.c"
 if [ -f fs/exec.c ] && ! grep -q ksu_handle_execveat fs/exec.c 2>/dev/null; then
   awk '/^int do_execve\(/ && !d { print "#if defined(CONFIG_KSU) && defined(CONFIG_KSU_MANUAL_HOOK)"; print "extern bool ksu_execveat_hook __read_mostly;"; print "extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,"; print "\t\t\tvoid *envp, int *flags);"; print "extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,"; print "\t\t\tvoid *argv, void *envp, int *flags);"; print "#endif"; print ""; d=1 } { print }' fs/exec.c > fs/exec.c.tmp && mv fs/exec.c.tmp fs/exec.c
@@ -14,10 +12,9 @@ if [ -f fs/exec.c ] && ! grep -q ksu_handle_execveat fs/exec.c 2>/dev/null; then
   awk '/^int compat_do_execve\(/ { c=1 } c && /return do_execveat_common/ && !h { print "#if defined(CONFIG_KSU) && defined(CONFIG_KSU_MANUAL_HOOK)"; print "\tif (!ksu_execveat_hook)"; print "\t\tksu_handle_execveat_sucompat(&AT_FDCWD, &filename, &argv, &envp, 0);"; print "#endif"; h=1 } { print }' fs/exec.c > fs/exec.c.tmp && mv fs/exec.c.tmp fs/exec.c
   grep -q ksu_handle_execveat fs/exec.c && { echo "  ✅"; OK=$((OK+1)); } || { echo "  ❌"; FAIL=$((FAIL+1)); }
 else
-  grep -q ksu_handle_execveat fs/exec.c 2>/dev/null && { echo "  ✅ (exists)"; OK=$((OK+1)); } || { echo "  ❌ missing"; FAIL=$((FAIL+1)); }
+  grep -q ksu_handle_execveat fs/exec.c 2>/dev/null && { echo "  ✅ (exists)"; OK=$((OK+1)); } || { echo "  ❌"; FAIL=$((FAIL+1)); }
 fi
 
-# Hook 2: fs/open.c
 echo "📌 Hook 2/5: fs/open.c"
 if [ -f fs/open.c ] && ! grep -q ksu_handle_faccessat fs/open.c 2>/dev/null; then
   awk '/SYSCALL_DEFINE3\(faccessat/ && !d { print "#if defined(CONFIG_KSU) && defined(CONFIG_KSU_MANUAL_HOOK)"; print "extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);"; print "#endif"; print ""; d=1 } { print }' fs/open.c > fs/open.c.tmp && mv fs/open.c.tmp fs/open.c
@@ -27,7 +24,6 @@ else
   grep -q ksu_handle_faccessat fs/open.c 2>/dev/null && { echo "  ✅ (exists)"; OK=$((OK+1)); } || { echo "  ❌"; FAIL=$((FAIL+1)); }
 fi
 
-# Hook 3: fs/read_write.c
 echo "📌 Hook 3/5: fs/read_write.c"
 if [ -f fs/read_write.c ] && ! grep -q ksu_handle_sys_read fs/read_write.c 2>/dev/null; then
   awk '/SYSCALL_DEFINE3\(read,/ && !d { print "#if defined(CONFIG_KSU) && defined(CONFIG_KSU_MANUAL_HOOK)"; print "extern bool ksu_vfs_read_hook __read_mostly;"; print "extern int ksu_handle_sys_read(unsigned int fd, char __user **buf, size_t *count);"; print "#endif"; print ""; d=1 } { print }' fs/read_write.c > fs/read_write.c.tmp && mv fs/read_write.c.tmp fs/read_write.c
@@ -37,7 +33,6 @@ else
   grep -q ksu_handle_sys_read fs/read_write.c 2>/dev/null && { echo "  ✅ (exists)"; OK=$((OK+1)); } || { echo "  ❌"; FAIL=$((FAIL+1)); }
 fi
 
-# Hook 4: fs/stat.c
 echo "📌 Hook 4/5: fs/stat.c"
 if [ -f fs/stat.c ] && ! grep -q ksu_handle_stat fs/stat.c 2>/dev/null; then
   awk '/SYSCALL_DEFINE4\(newfstatat/ && !d { print "#if defined(CONFIG_KSU) && defined(CONFIG_KSU_MANUAL_HOOK)"; print "extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);"; print "#endif"; print ""; d=1 } { print }' fs/stat.c > fs/stat.c.tmp && mv fs/stat.c.tmp fs/stat.c
@@ -47,7 +42,6 @@ else
   grep -q ksu_handle_stat fs/stat.c 2>/dev/null && { echo "  ✅ (exists)"; OK=$((OK+1)); } || { echo "  ❌"; FAIL=$((FAIL+1)); }
 fi
 
-# Hook 5: optional input.c
 echo ""
 if [ "$OPTIONAL" = true ]; then
   echo "📌 Hook 5/5: drivers/input/input.c"
