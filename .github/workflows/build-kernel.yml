@@ -1,4 +1,4 @@
-name: "🔨 Build SukiSU-Ultra Kernel (lisa) v15"
+name: "🔨 Build SukiSU-Ultra Kernel (lisa) v16"
 
 on:
   workflow_dispatch:
@@ -66,9 +66,9 @@ jobs:
           cd $WORK_DIR/kernel_source
           for h in susfs.h susfs_def.h susfs_redirect.h; do
             [ -f "include/linux/$h" ] && continue
-            GUARD="_LINUX_$(echo $h | tr 'a-z.' 'A-Z_')"
-            printf '#ifndef %s\n#define %s\n#include <linux/types.h>\n#endif\n' "$GUARD" "$GUARD" > "include/linux/$h"
-            echo "  ✅ Created stub: include/linux/$h"
+            G="_LINUX_$(echo $h | tr 'a-z.' 'A-Z_')"
+            printf '#ifndef %s\n#define %s\n#include <linux/types.h>\n#endif\n' "$G" "$G" > "include/linux/$h"
+            echo "  ✅ Stub: include/linux/$h"
           done
 
       - name: "🔩 Step 6: Apply manual hooks"
@@ -111,90 +111,73 @@ jobs:
           fi
 
       # ═══════════════════════════════════════════════════════
-      # Step 8: Setup toolchain + PERMANENTLY add to PATH
-      # v15 fix: use $GITHUB_PATH so ALL subsequent steps
-      # automatically have clang/ld.lld in PATH
+      # Step 8: Defconfig
+      # v16: Force touchscreen as BUILT-IN (=y not =m)
+      #      so touch works WITHOUT modules
       # ═══════════════════════════════════════════════════════
-      - name: "🔧 Step 8: Setup toolchain (add to GITHUB_PATH)"
-        run: |
-          if [ "${{ inputs.clang_version }}" = "proton" ]; then
-            git clone --depth=1 https://github.com/kdrag0n/proton-clang.git $WORK_DIR/toolchain
-            CLANG_BIN="$WORK_DIR/toolchain/bin"
-          else
-            mkdir -p $WORK_DIR/toolchain
-            URL=$(curl -s https://api.github.com/repos/ZyCromerZ/Clang/releases/latest | grep "browser_download_url.*tar.gz" | head -1 | cut -d'"' -f4)
-            if [ -n "$URL" ]; then
-              wget -q "$URL" -O clang.tar.gz && tar xzf clang.tar.gz -C $WORK_DIR/toolchain && rm clang.tar.gz
-            else
-              git clone --depth=1 https://github.com/kdrag0n/proton-clang.git $WORK_DIR/toolchain
-            fi
-            CLANG_BIN=$(dirname "$(find $WORK_DIR/toolchain -name clang -type f -executable | head -1)")
-          fi
-
-          # ═══════════════════════════════════════════════
-          # CRITICAL v15 FIX: Add to GITHUB_PATH
-          # This makes clang bin available in ALL steps!
-          # (export PATH= only works within the SAME step)
-          # ═══════════════════════════════════════════════
-          echo "$CLANG_BIN" >> $GITHUB_PATH
-          echo "CLANG_BIN=$CLANG_BIN" >> $GITHUB_ENV
-
-          # Also create symlinks as belt-and-suspenders fallback
-          sudo ln -sf "$CLANG_BIN/ld.lld" /usr/local/bin/ld.lld 2>/dev/null || true
-          sudo ln -sf "$CLANG_BIN/llvm-ar" /usr/local/bin/llvm-ar 2>/dev/null || true
-          sudo ln -sf "$CLANG_BIN/llvm-nm" /usr/local/bin/llvm-nm 2>/dev/null || true
-          sudo ln -sf "$CLANG_BIN/llvm-objcopy" /usr/local/bin/llvm-objcopy 2>/dev/null || true
-          sudo ln -sf "$CLANG_BIN/llvm-objdump" /usr/local/bin/llvm-objdump 2>/dev/null || true
-          sudo ln -sf "$CLANG_BIN/llvm-strip" /usr/local/bin/llvm-strip 2>/dev/null || true
-
-          echo ""
-          echo "✅ Toolchain: $CLANG_BIN"
-          echo "✅ Added to GITHUB_PATH (persists across ALL steps)"
-          "$CLANG_BIN/clang" --version | head -1
-          echo "ld.lld: $CLANG_BIN/ld.lld ($(file "$CLANG_BIN/ld.lld" | cut -d: -f2))"
-
-      # ═══════════════════════════════════════════════════════
-      # Step 9: Defconfig — clang/ld.lld now in PATH via GITHUB_PATH
-      # ═══════════════════════════════════════════════════════
-      - name: "⚙️ Step 9: Defconfig (non-interactive)"
+      - name: "⚙️ Step 8: Modify defconfig (touch built-in)"
         run: |
           cd $WORK_DIR/kernel_source
 
-          # Verify tools are in PATH (from GITHUB_PATH set in Step 8)
-          echo "🔍 Verifying tools in PATH..."
-          which clang   && echo "  ✅ clang: $(which clang)"   || { echo "  ❌ clang NOT FOUND"; exit 1; }
-          which ld.lld  && echo "  ✅ ld.lld: $(which ld.lld)" || { echo "  ❌ ld.lld NOT FOUND"; exit 1; }
-          which llvm-ar && echo "  ✅ llvm-ar: $(which llvm-ar)" || echo "  ⚠️ llvm-ar not in PATH"
-          echo ""
-
           # Find defconfig
-          DC=$(find arch/$ARCH/configs -name "*lahaina-qgki*" -o -name "*lisa*" 2>/dev/null | head -1)
+          DC=""
+          for d in \
+            "arch/$ARCH/configs/vendor/lahaina-qgki_defconfig" \
+            "arch/$ARCH/configs/lisa_defconfig" \
+            "arch/$ARCH/configs/vendor/lisa_defconfig"; do
+            [ -f "$d" ] && DC="$d" && break
+          done
+          [ -z "$DC" ] && DC=$(find arch/$ARCH/configs -name "*lisa*" -o -name "*lahaina-qgki*" 2>/dev/null | head -1)
           [ -z "$DC" ] && { echo "❌ No defconfig!"; exit 1; }
           echo "📋 Using: $DC"
-          DC_NAME=$(basename "$DC")
 
-          # Add KSU configs
+          # ── KSU configs ──
           sed -i '/CONFIG_KSU/d; /CONFIG_KPROBES/d; /CONFIG_KALLSYMS/d' "$DC"
-          cat >> "$DC" << 'DEFCFG'
+          cat >> "$DC" << 'KSU_CFG'
           CONFIG_KSU=y
           CONFIG_KSU_MANUAL_HOOK=y
           # CONFIG_KPROBES is not set
           CONFIG_KALLSYMS=y
           CONFIG_KALLSYMS_ALL=y
           # CONFIG_KSU_SUSFS is not set
-          DEFCFG
+          KSU_CFG
+          sed -i 's/^          //' "$DC"
 
-          # Generate .config
-          make O=out ARCH=$ARCH \
-            CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            LD=ld.lld AR=llvm-ar NM=llvm-nm \
-            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
-            $DC_NAME 2>&1 | tee $WORK_DIR/build_defconfig.log
-
-          # Disable ALL SUSFS in .config
+          # ══════════════════════════════════════════════════
+          # v16 FIX: Force touchscreen drivers BUILT-IN (=y)
+          # This way touch works even with do.modules=0
+          # ══════════════════════════════════════════════════
           echo ""
-          echo "🚫 Disabling SUSFS..."
+          echo "🖐️ Forcing touchscreen drivers as built-in..."
+          for pat in \
+            CONFIG_TOUCHSCREEN_GOODIX_BRL \
+            CONFIG_TOUCHSCREEN_GOODIX_GTX8 \
+            CONFIG_TOUCHSCREEN_GOODIX \
+            CONFIG_TOUCHSCREEN_FTS \
+            CONFIG_TOUCHSCREEN_FOCALTECH \
+            CONFIG_TOUCHSCREEN_NT36XXX \
+            CONFIG_TOUCHSCREEN_NOVATEK \
+            CONFIG_TOUCHSCREEN_SYNAPTICS \
+            CONFIG_TOUCHSCREEN_ATMEL \
+            CONFIG_INPUT_TOUCHSCREEN; do
+            if grep -q "${pat}=m" "$DC"; then
+              sed -i "s/${pat}=m/${pat}=y/" "$DC"
+              echo "  ✅ $pat: m → y"
+            elif grep -q "${pat}=y" "$DC"; then
+              echo "  ✅ $pat: already =y"
+            fi
+          done
+          # Catch-all: any remaining touchscreen modules → built-in
+          sed -i '/CONFIG_TOUCHSCREEN.*=m/s/=m/=y/' "$DC"
+          echo ""
+
+          # ── Generate .config ──
+          DC_NAME=$(basename "$DC")
+          make O=out ARCH=$ARCH $DC_NAME 2>&1 | tee $WORK_DIR/build_defconfig.log
+
+          # ── Disable SUSFS ──
+          echo ""
+          echo "🚫 Disabling SUSFS in .config..."
           sed -i '/CONFIG_KSU_SUSFS/d' out/.config
           cat >> out/.config << 'SUSFS_OFF'
           # CONFIG_KSU_SUSFS is not set
@@ -210,30 +193,79 @@ jobs:
           # CONFIG_KSU_SUSFS_OPEN_REDIRECT is not set
           # CONFIG_KSU_SUSFS_SUS_SU is not set
           SUSFS_OFF
+          sed -i 's/^          //' out/.config
 
-          # Resolve ALL Kconfig deps non-interactively
+          # ── Force touchscreen built-in in .config too ──
+          echo "🖐️ Force touchscreen =y in .config..."
+          sed -i '/CONFIG_TOUCHSCREEN/s/=m/=y/' out/.config
+          sed -i 's/CONFIG_INPUT_TOUCHSCREEN=m/CONFIG_INPUT_TOUCHSCREEN=y/' out/.config
+
+          # ── olddefconfig: resolve deps non-interactively ──
           echo ""
           echo "🔄 Running olddefconfig..."
-          make O=out ARCH=$ARCH \
-            CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            LD=ld.lld AR=llvm-ar NM=llvm-nm \
-            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
-            olddefconfig 2>&1
+          make O=out ARCH=$ARCH olddefconfig 2>&1
 
+          # ── Verify touchscreen ──
           echo ""
-          echo "📋 Final KSU configs:"
-          grep -E "CONFIG_KSU" out/.config || true
+          echo "📋 Touchscreen configs in .config:"
+          grep -i "CONFIG_TOUCHSCREEN" out/.config | head -20
+          echo ""
+          echo "📋 KSU configs:"
+          grep "CONFIG_KSU" out/.config || true
           echo ""
           echo "✅ Defconfig ready"
 
-      - name: "🔨 Step 10: Build kernel + modules"
+      # ═══════════════════════════════════════════════════════
+      # Step 9: Setup toolchain — save FULL PATH for LD
+      # ═══════════════════════════════════════════════════════
+      - name: "🔧 Step 9: Setup toolchain"
+        run: |
+          if [ "${{ inputs.clang_version }}" = "proton" ]; then
+            git clone --depth=1 https://github.com/kdrag0n/proton-clang.git $WORK_DIR/toolchain
+            CLANG_BIN="$WORK_DIR/toolchain/bin"
+          else
+            mkdir -p $WORK_DIR/toolchain
+            URL=$(curl -s https://api.github.com/repos/ZyCromerZ/Clang/releases/latest | grep "browser_download_url.*tar.gz" | head -1 | cut -d'"' -f4)
+            if [ -n "$URL" ]; then
+              wget -q "$URL" -O clang.tar.gz && tar xzf clang.tar.gz -C $WORK_DIR/toolchain && rm clang.tar.gz
+            else
+              git clone --depth=1 https://github.com/kdrag0n/proton-clang.git $WORK_DIR/toolchain
+            fi
+            CLANG_BIN=$(dirname "$(find $WORK_DIR/toolchain -name clang -type f -executable | head -1)")
+          fi
+
+          # Save env vars + add to GITHUB_PATH
+          echo "CLANG_BIN=$CLANG_BIN" >> $GITHUB_ENV
+          echo "$CLANG_BIN" >> $GITHUB_PATH
+
+          # Save FULL PATH for each tool (belt-and-suspenders)
+          echo "LD_FULL=$CLANG_BIN/ld.lld" >> $GITHUB_ENV
+          echo "AR_FULL=$CLANG_BIN/llvm-ar" >> $GITHUB_ENV
+          echo "NM_FULL=$CLANG_BIN/llvm-nm" >> $GITHUB_ENV
+          echo "OBJCOPY_FULL=$CLANG_BIN/llvm-objcopy" >> $GITHUB_ENV
+          echo "OBJDUMP_FULL=$CLANG_BIN/llvm-objdump" >> $GITHUB_ENV
+          echo "STRIP_FULL=$CLANG_BIN/llvm-strip" >> $GITHUB_ENV
+
+          # Symlinks as extra fallback
+          sudo ln -sf "$CLANG_BIN/ld.lld" /usr/local/bin/ld.lld 2>/dev/null || true
+
+          echo ""
+          echo "✅ Toolchain: $CLANG_BIN"
+          "$CLANG_BIN/clang" --version | head -1
+          echo "✅ ld.lld: $CLANG_BIN/ld.lld"
+
+      # ═══════════════════════════════════════════════════════
+      # Step 10: Build — uses FULL PATHS for all tools
+      # ═══════════════════════════════════════════════════════
+      - name: "🔨 Step 10: Build kernel"
         run: |
           cd $WORK_DIR/kernel_source
 
-          # Verify tools AGAIN (belt-and-suspenders)
-          which clang  || { echo "❌ clang NOT FOUND"; exit 1; }
-          which ld.lld || { echo "❌ ld.lld NOT FOUND"; exit 1; }
+          # Verify tools
+          echo "🔍 Verifying toolchain..."
+          [ -x "${{ env.LD_FULL }}" ] && echo "  ✅ LD: ${{ env.LD_FULL }}" || { echo "  ❌ LD not found!"; exit 1; }
+          [ -x "${{ env.CLANG_BIN }}/clang" ] && echo "  ✅ CC: ${{ env.CLANG_BIN }}/clang" || { echo "  ❌ clang!"; exit 1; }
+          echo ""
 
           KC="-Wno-default-const-init-var-unsafe -Wno-default-const-init-field-unsafe"
           KC="$KC -Wno-sometimes-uninitialized -Wno-uninitialized -Wno-enum-conversion"
@@ -242,75 +274,74 @@ jobs:
           KC="$KC -Wno-single-bit-bitfield-constant-conversion -Wno-array-parameter"
 
           echo "🔨 Building kernel..."
-          echo "   clang:  $(which clang)"
-          echo "   ld.lld: $(which ld.lld)"
-          echo ""
-
           make O=out ARCH=$ARCH \
-            CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
+            CC=${{ env.CLANG_BIN }}/clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
-            LD=ld.lld AR=llvm-ar NM=llvm-nm \
-            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
+            LD=${{ env.LD_FULL }} \
+            AR=${{ env.AR_FULL }} \
+            NM=${{ env.NM_FULL }} \
+            OBJCOPY=${{ env.OBJCOPY_FULL }} \
+            OBJDUMP=${{ env.OBJDUMP_FULL }} \
+            STRIP=${{ env.STRIP_FULL }} \
             KCFLAGS="$KC" \
             -j$(nproc) 2>&1 | tee $WORK_DIR/build_kernel.log
-
-          # Install modules
-          echo ""
-          echo "📦 Installing modules..."
-          make O=out ARCH=$ARCH \
-            CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            LD=ld.lld AR=llvm-ar NM=llvm-nm \
-            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
-            INSTALL_MOD_PATH=$WORK_DIR/modules_out \
-            INSTALL_MOD_STRIP=1 \
-            modules_install 2>&1 || true
 
           IMG=$(find out/arch/$ARCH/boot -name "Image*" -type f | head -1)
           [ -z "$IMG" ] && { echo "❌ BUILD FAILED"; tail -80 $WORK_DIR/build_kernel.log; exit 1; }
           echo ""
+          echo "════════════════════════════════════"
           echo "✅ BUILD SUCCESS: $IMG ($(stat -c%s "$IMG" | numfmt --to=iec))"
+          echo "════════════════════════════════════"
 
-      - name: "📦 Step 11: Package AnyKernel3"
+      # ═══════════════════════════════════════════════════════
+      # Step 11: AnyKernel3 — NO modules, touch is built-in
+      # ═══════════════════════════════════════════════════════
+      - name: "📦 Step 11: Package AnyKernel3 (no modules)"
         run: |
           cd $WORK_DIR
           TIMESTAMP=$(date +%Y%m%d-%H%M)
 
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
           cd anykernel
-          rm -rf patch ramdisk LICENSE README.md
+          rm -rf modules patch ramdisk LICENSE README.md
 
           cat > anykernel.sh << 'AKEOF'
-          # AnyKernel3 Ramdisk Mod Script
-          # osm0sis @ xda-developers
-          
-          properties() { '
-          kernel.string=SukiSU-Ultra-ManualHook for Xiaomi 11 Lite NE 5G (lisa)
-          do.devicecheck=1
-          do.modules=1
-          do.systemless=1
-          do.cleanup=1
-          do.cleanuponabort=0
-          device.name1=lisa
-          device.name2=lisain
-          device.name3=lisanin
-          supported.versions=
-          supported.patchlevels=
-          '; }
-          
-          block=/dev/block/bootdevice/by-name/boot;
-          is_slot_device=auto;
-          ramdisk_compression=auto;
-          patch_vbmeta_flag=auto;
-          
-          . tools/ak3-core.sh;
-          
-          split_boot;
-          flash_boot;
-          flash_dtbo;
-          AKEOF
+# AnyKernel3 Ramdisk Mod Script
+# osm0sis @ xda-developers
 
-          # Kernel Image
+properties() { '
+kernel.string=SukiSU-Ultra-ManualHook for Xiaomi 11 Lite NE 5G (lisa)
+do.devicecheck=1
+do.modules=0
+do.systemless=1
+do.cleanup=1
+do.cleanuponabort=0
+device.name1=lisa
+device.name2=lisain
+device.name3=lisanin
+supported.versions=
+supported.patchlevels=
+'; }
+
+block=/dev/block/bootdevice/by-name/boot;
+is_slot_device=auto;
+ramdisk_compression=auto;
+patch_vbmeta_flag=auto;
+
+. tools/ak3-core.sh;
+
+split_boot;
+flash_boot;
+flash_dtbo;
+AKEOF
+
+          # Verify
+          grep -q "block=" anykernel.sh && echo "✅ block=" || exit 1
+          grep -q "do.modules=0" anykernel.sh && echo "✅ do.modules=0 (touch is built-in)" || exit 1
+          grep -q "split_boot" anykernel.sh && echo "✅ split_boot" || exit 1
+
+          # Copy kernel Image
           for img in Image Image.gz; do
             [ -f "$WORK_DIR/kernel_source/out/arch/$ARCH/boot/$img" ] && \
               cp "$WORK_DIR/kernel_source/out/arch/$ARCH/boot/$img" . && \
@@ -321,25 +352,14 @@ jobs:
           [ -f "$WORK_DIR/kernel_source/out/arch/$ARCH/boot/dtbo.img" ] && \
             cp "$WORK_DIR/kernel_source/out/arch/$ARCH/boot/dtbo.img" . && echo "✅ dtbo.img"
 
-          # Modules
-          MODDIR="modules/vendor/lib/modules"
-          mkdir -p "$MODDIR"
-          MC=0
-          if [ -d "$WORK_DIR/modules_out" ]; then
-            while IFS= read -r ko; do cp "$ko" "$MODDIR/"; MC=$((MC+1)); done \
-              < <(find "$WORK_DIR/modules_out" -name "*.ko" -type f)
-          fi
-          if [ "$MC" -eq 0 ]; then
-            while IFS= read -r ko; do
-              BN=$(basename "$ko")
-              [ ! -f "$MODDIR/$BN" ] && cp "$ko" "$MODDIR/" && MC=$((MC+1))
-            done < <(find "$WORK_DIR/kernel_source/out" -name "*.ko" -type f)
-          fi
-          [ "$MC" -gt 0 ] && aarch64-linux-gnu-strip --strip-unneeded "$MODDIR"/*.ko 2>/dev/null || true
-          echo "✅ $MC modules"
+          # NO modules needed — touchscreen is built-in!
+          echo ""
+          echo "ℹ️ No modules included (do.modules=0)"
+          echo "   Touchscreen driver compiled as built-in (=y)"
 
           ZIP_NAME="SukiSU-Ultra-ManualHook-lisa-${TIMESTAMP}.zip"
           zip -r9 "$WORK_DIR/$ZIP_NAME" . -x ".git*"
+          echo ""
           echo "✅ $ZIP_NAME ($(stat -c%s "$WORK_DIR/$ZIP_NAME" | numfmt --to=iec))"
           echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
 
