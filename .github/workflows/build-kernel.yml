@@ -163,24 +163,24 @@ jobs:
 
           sed -i '/CONFIG_KSU/d; /CONFIG_KPROBES/d; /CONFIG_KALLSYMS/d' "$DC"
           cat >> "$DC" << 'DEFCFG'
-CONFIG_KSU=y
-CONFIG_KSU_MANUAL_HOOK=y
-# CONFIG_KPROBES is not set
-CONFIG_KALLSYMS=y
-CONFIG_KALLSYMS_ALL=y
-# CONFIG_KSU_SUSFS is not set
-# CONFIG_KSU_SUSFS_SUS_PATH is not set
-# CONFIG_KSU_SUSFS_SUS_MOUNT is not set
-# CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT is not set
-# CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT is not set
-# CONFIG_KSU_SUSFS_SUS_KSTAT is not set
-# CONFIG_KSU_SUSFS_SUS_OVERLAYFS is not set
-# CONFIG_KSU_SUSFS_TRY_UMOUNT is not set
-# CONFIG_KSU_SUSFS_SPOOF_UNAME is not set
-# CONFIG_KSU_SUSFS_ENABLE_LOG is not set
-# CONFIG_KSU_SUSFS_OPEN_REDIRECT is not set
-# CONFIG_KSU_SUSFS_SUS_SU is not set
-DEFCFG
+          CONFIG_KSU=y
+          CONFIG_KSU_MANUAL_HOOK=y
+          # CONFIG_KPROBES is not set
+          CONFIG_KALLSYMS=y
+          CONFIG_KALLSYMS_ALL=y
+          # CONFIG_KSU_SUSFS is not set
+          # CONFIG_KSU_SUSFS_SUS_PATH is not set
+          # CONFIG_KSU_SUSFS_SUS_MOUNT is not set
+          # CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT is not set
+          # CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT is not set
+          # CONFIG_KSU_SUSFS_SUS_KSTAT is not set
+          # CONFIG_KSU_SUSFS_SUS_OVERLAYFS is not set
+          # CONFIG_KSU_SUSFS_TRY_UMOUNT is not set
+          # CONFIG_KSU_SUSFS_SPOOF_UNAME is not set
+          # CONFIG_KSU_SUSFS_ENABLE_LOG is not set
+          # CONFIG_KSU_SUSFS_OPEN_REDIRECT is not set
+          # CONFIG_KSU_SUSFS_SUS_SU is not set
+          DEFCFG
 
           DC_NAME=$(basename "$DC")
           make O=out ARCH=$ARCH \
@@ -253,34 +253,34 @@ DEFCFG
 
           # ── anykernel.sh ──
           cat > anykernel.sh << 'AKEOF'
-# AnyKernel3 Ramdisk Mod Script
-# osm0sis @ xda-developers
-
-properties() { '
-kernel.string=SukiSU-Ultra-ManualHook for Xiaomi 11 Lite NE 5G (lisa)
-do.devicecheck=1
-do.modules=1
-do.systemless=1
-do.cleanup=1
-do.cleanuponabort=0
-device.name1=lisa
-device.name2=lisain
-device.name3=lisanin
-supported.versions=
-supported.patchlevels=
-'; }
-
-block=/dev/block/bootdevice/by-name/boot;
-is_slot_device=auto;
-ramdisk_compression=auto;
-patch_vbmeta_flag=auto;
-
-. tools/ak3-core.sh;
-
-split_boot;
-flash_boot;
-flash_dtbo;
-AKEOF
+          # AnyKernel3 Ramdisk Mod Script
+          # osm0sis @ xda-developers
+          
+          properties() { '
+          kernel.string=SukiSU-Ultra-ManualHook for Xiaomi 11 Lite NE 5G (lisa)
+          do.devicecheck=1
+          do.modules=1
+          do.systemless=1
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=lisa
+          device.name2=lisain
+          device.name3=lisanin
+          supported.versions=
+          supported.patchlevels=
+          '; }
+          
+          block=/dev/block/bootdevice/by-name/boot;
+          is_slot_device=auto;
+          ramdisk_compression=auto;
+          patch_vbmeta_flag=auto;
+          
+          . tools/ak3-core.sh;
+          
+          split_boot;
+          flash_boot;
+          flash_dtbo;
+          AKEOF
 
           # Verify
           grep -q "block=" anykernel.sh && echo "✅ block=" || exit 1
