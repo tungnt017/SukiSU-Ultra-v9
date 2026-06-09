@@ -105,21 +105,18 @@ jobs:
           fi
           echo "MOD_COUNT=$MOD_COUNT" >> $GITHUB_ENV
 
-
       - name: "✅ Step 6: Write FIXED anykernel.sh"
         run: |
           cd work/repack
-          [ "${{ env.MOD_COUNT }}" -gt 0 ] && DO_MOD=1 || DO_MOD=0
 
-          cat > anykernel.sh << FIXEOF
+          cat > anykernel.sh << 'FIXEOF'
           # AnyKernel3 Ramdisk Mod Script
           # osm0sis @ xda-developers
           
           properties() { '
           kernel.string=SukiSU-Ultra-ManualHook for Xiaomi 11 Lite NE 5G (lisa)
           do.devicecheck=1
-          do.modules=${DO_MOD}
-          do.systemless=1
+          do.modules=0
           do.cleanup=1
           do.cleanuponabort=0
           device.name1=lisa
@@ -139,6 +136,18 @@ jobs:
           split_boot;
           flash_boot;
           flash_dtbo;
+          
+          # --- Manual module installation (bypass AK3 handler) ---
+          if [ -d "$AKHOME/modules/vendor/lib/modules" ]; then
+            ui_print "  Installing kernel modules to /vendor...";
+            mount /vendor 2>/dev/null;
+            mkdir -p /vendor/lib/modules;
+            cp -rf $AKHOME/modules/vendor/lib/modules/* /vendor/lib/modules/;
+            chmod 644 /vendor/lib/modules/*.ko 2>/dev/null;
+            ui_print "  ✅ Modules installed to /vendor/lib/modules";
+          else
+            ui_print "  ℹ️ No modules to install";
+          fi;
           FIXEOF
 
           echo "═══ FIXED anykernel.sh: ═══"
