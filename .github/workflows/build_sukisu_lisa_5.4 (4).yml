@@ -299,101 +299,101 @@ jobs:
           # [1/6] fs/exec.c
           echo "[1/6] fs/exec.c"
           sed -i '/^int do_execve(struct filename \*filename,$/i\
-#ifdef CONFIG_KSU_MANUAL_HOOK\
-extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,\
-\t\t\t\tvoid *argv, void *envp, int *flags);\
-#endif' fs/exec.c
-
-          sed -i '/static int do_execveat_common(int fd, struct filename \*filename,/,/retval = count(argv, MAX_ARG_STRINGS);/{
-            /retval = count(argv, MAX_ARG_STRINGS);/i\
-#ifdef CONFIG_KSU_MANUAL_HOOK\
-\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\
-#endif
-          }' fs/exec.c
-
-          if grep -q "ksu_handle_execveat" fs/exec.c; then echo "  ✅"; else
-            sed -i '/^int do_execve(/,/^{/{
-              /^{/a\
-#ifdef CONFIG_KSU_MANUAL_HOOK\
-\t{ int __fd = AT_FDCWD; int __flags = 0;\
-\tksu_handle_execveat(&__fd, &filename, &argv, &envp, &__flags); }\
-#endif
-            }' fs/exec.c
-            grep -q "ksu_handle_execveat" fs/exec.c && echo "  ✅ alt" || { echo "  ❌"; exit 1; }
-          fi
-
-          # [2/6] fs/open.c
-          echo "[2/6] fs/open.c"
-          sed -i '/^long do_faccessat(int dfd/i\
-#ifdef CONFIG_KSU_MANUAL_HOOK\
-extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,\
-\t\t\t\tint *mode, int *flags);\
-#endif' fs/open.c
-          sed -i '/^long do_faccessat(int dfd, const char __user \*filename, int mode)/,/^{/{
-            /^{/a\
-#ifdef CONFIG_KSU_MANUAL_HOOK\
-\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\
-#endif
-          }' fs/open.c
-          grep -q "ksu_handle_faccessat" fs/open.c && echo "  ✅" || echo "  ⚠️"
-
-          # [3/6] fs/read_write.c
-          echo "[3/6] fs/read_write.c"
-          sed -i '/^ssize_t vfs_read(struct file \*file/i\
-#ifdef CONFIG_KSU_MANUAL_HOOK\
-extern int ksu_handle_vfs_read(struct file **file_ptr,\
-\t\t\t\tchar __user **buf_ptr, size_t *count_ptr, loff_t **pos);\
-#endif' fs/read_write.c
-          sed -i '/^ssize_t vfs_read(struct file \*file/,/^{/{
-            /^{/a\
-#ifdef CONFIG_KSU_MANUAL_HOOK\
-\tksu_handle_vfs_read(&file, &buf, &count, &pos);\
-#endif
-          }' fs/read_write.c
-          grep -q "ksu_handle_vfs_read" fs/read_write.c && echo "  ✅" || echo "  ⚠️"
-
-          # [4/6] fs/stat.c
-          echo "[4/6] fs/stat.c"
-          sed -i '/#include <linux\/syscalls.h>/a\
-#ifdef CONFIG_KSU_MANUAL_HOOK\
-extern int ksu_handle_stat(int *dfd, const char __user **filename_user,\
-\t\t\t\tint *flags);\
-#endif' fs/stat.c
-          sed -i '/SYSCALL_DEFINE4(newfstatat/,/struct kstat stat;/{
-            /struct kstat stat;/a\
-#ifdef CONFIG_KSU_MANUAL_HOOK\
-\tksu_handle_stat(&dfd, &filename, &flag);\
-#endif
-          }' fs/stat.c
-          grep -q "ksu_handle_stat" fs/stat.c && echo "  ✅" || echo "  ⚠️"
-
-          # [5/6] drivers/input/input.c
-          echo "[5/6] drivers/input/input.c"
-          sed -i '/#include <linux\/input.h>/a\
-#ifdef CONFIG_KSU_MANUAL_HOOK\
-extern void ksu_handle_input_handle_event(unsigned int *type,\
-\t\t\t\tunsigned int *code, int *value);\
-#endif' drivers/input/input.c
-          sed -i '/static void input_handle_event/,/^{/{
-            /^{/a\
-#ifdef CONFIG_KSU_MANUAL_HOOK\
-\tksu_handle_input_handle_event(&type, &code, &value);\
-#endif
-          }' drivers/input/input.c
-          grep -q "ksu_handle_input_handle_event" drivers/input/input.c && echo "  ✅" || echo "  ⚠️"
-
-          # [6/6] kernel/reboot.c (optional)
-          echo "[6/6] kernel/reboot.c"
-          if [ -f "kernel/reboot.c" ]; then
-            sed -i '/#include <linux\/reboot.h>/a\
-#ifdef CONFIG_KSU_MANUAL_HOOK\
-extern void ksu_handle_reboot(void);\
-#endif' kernel/reboot.c
-            sed -i '/SYSCALL_DEFINE4(__reboot/,/^{/{
-              /^{/a\
-#ifdef CONFIG_KSU_MANUAL_HOOK\
-\tksu_handle_reboot();\
-#endif
+          #ifdef CONFIG_KSU_MANUAL_HOOK\
+          extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,\
+          \t\t\t\tvoid *argv, void *envp, int *flags);\
+          #endif' fs/exec.c
+          
+                    sed -i '/static int do_execveat_common(int fd, struct filename \*filename,/,/retval = count(argv, MAX_ARG_STRINGS);/{
+                      /retval = count(argv, MAX_ARG_STRINGS);/i\
+          #ifdef CONFIG_KSU_MANUAL_HOOK\
+          \tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\
+          #endif
+                    }' fs/exec.c
+          
+                    if grep -q "ksu_handle_execveat" fs/exec.c; then echo "  ✅"; else
+                      sed -i '/^int do_execve(/,/^{/{
+                        /^{/a\
+          #ifdef CONFIG_KSU_MANUAL_HOOK\
+          \t{ int __fd = AT_FDCWD; int __flags = 0;\
+          \tksu_handle_execveat(&__fd, &filename, &argv, &envp, &__flags); }\
+          #endif
+                      }' fs/exec.c
+                      grep -q "ksu_handle_execveat" fs/exec.c && echo "  ✅ alt" || { echo "  ❌"; exit 1; }
+                    fi
+          
+                    # [2/6] fs/open.c
+                    echo "[2/6] fs/open.c"
+                    sed -i '/^long do_faccessat(int dfd/i\
+          #ifdef CONFIG_KSU_MANUAL_HOOK\
+          extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,\
+          \t\t\t\tint *mode, int *flags);\
+          #endif' fs/open.c
+                    sed -i '/^long do_faccessat(int dfd, const char __user \*filename, int mode)/,/^{/{
+                      /^{/a\
+          #ifdef CONFIG_KSU_MANUAL_HOOK\
+          \tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\
+          #endif
+                    }' fs/open.c
+                    grep -q "ksu_handle_faccessat" fs/open.c && echo "  ✅" || echo "  ⚠️"
+          
+                    # [3/6] fs/read_write.c
+                    echo "[3/6] fs/read_write.c"
+                    sed -i '/^ssize_t vfs_read(struct file \*file/i\
+          #ifdef CONFIG_KSU_MANUAL_HOOK\
+          extern int ksu_handle_vfs_read(struct file **file_ptr,\
+          \t\t\t\tchar __user **buf_ptr, size_t *count_ptr, loff_t **pos);\
+          #endif' fs/read_write.c
+                    sed -i '/^ssize_t vfs_read(struct file \*file/,/^{/{
+                      /^{/a\
+          #ifdef CONFIG_KSU_MANUAL_HOOK\
+          \tksu_handle_vfs_read(&file, &buf, &count, &pos);\
+          #endif
+                    }' fs/read_write.c
+                    grep -q "ksu_handle_vfs_read" fs/read_write.c && echo "  ✅" || echo "  ⚠️"
+          
+                    # [4/6] fs/stat.c
+                    echo "[4/6] fs/stat.c"
+                    sed -i '/#include <linux\/syscalls.h>/a\
+          #ifdef CONFIG_KSU_MANUAL_HOOK\
+          extern int ksu_handle_stat(int *dfd, const char __user **filename_user,\
+          \t\t\t\tint *flags);\
+          #endif' fs/stat.c
+                    sed -i '/SYSCALL_DEFINE4(newfstatat/,/struct kstat stat;/{
+                      /struct kstat stat;/a\
+          #ifdef CONFIG_KSU_MANUAL_HOOK\
+          \tksu_handle_stat(&dfd, &filename, &flag);\
+          #endif
+                    }' fs/stat.c
+                    grep -q "ksu_handle_stat" fs/stat.c && echo "  ✅" || echo "  ⚠️"
+          
+                    # [5/6] drivers/input/input.c
+                    echo "[5/6] drivers/input/input.c"
+                    sed -i '/#include <linux\/input.h>/a\
+          #ifdef CONFIG_KSU_MANUAL_HOOK\
+          extern void ksu_handle_input_handle_event(unsigned int *type,\
+          \t\t\t\tunsigned int *code, int *value);\
+          #endif' drivers/input/input.c
+                    sed -i '/static void input_handle_event/,/^{/{
+                      /^{/a\
+          #ifdef CONFIG_KSU_MANUAL_HOOK\
+          \tksu_handle_input_handle_event(&type, &code, &value);\
+          #endif
+                    }' drivers/input/input.c
+                    grep -q "ksu_handle_input_handle_event" drivers/input/input.c && echo "  ✅" || echo "  ⚠️"
+          
+                    # [6/6] kernel/reboot.c (optional)
+                    echo "[6/6] kernel/reboot.c"
+                    if [ -f "kernel/reboot.c" ]; then
+                      sed -i '/#include <linux\/reboot.h>/a\
+          #ifdef CONFIG_KSU_MANUAL_HOOK\
+          extern void ksu_handle_reboot(void);\
+          #endif' kernel/reboot.c
+                      sed -i '/SYSCALL_DEFINE4(__reboot/,/^{/{
+                        /^{/a\
+          #ifdef CONFIG_KSU_MANUAL_HOOK\
+          \tksu_handle_reboot();\
+          #endif
             }' kernel/reboot.c
             grep -q "ksu_handle_reboot" kernel/reboot.c && echo "  ✅" || echo "  ⚠️ optional"
           fi
@@ -591,29 +591,29 @@ extern void ksu_handle_reboot(void);\
           cd AnyKernel3 && rm -rf modules patch ramdisk LICENSE README.md .git
 
           cat > anykernel.sh << 'EOF'
-# AnyKernel3 — SukiSU-Ultra for lisa (5.4 QGKI)
-properties() { '
-kernel.string=SukiSU-Ultra Kernel for Lisa (5.4 QGKI)
-do.devicecheck=1
-do.modules=1
-do.systemless=1
-do.cleanup=1
-do.cleanuponabort=0
-device.name1=lisa
-device.name2=lisain
-device.name3=lisa_global
-supported.versions=
-supported.patchlevels=
-'; }
-block=/dev/block/bootdevice/by-name/boot;
-is_slot_device=auto;
-ramdisk_compression=auto;
-patch_vbmeta_flag=auto;
-. tools/ak3-core.sh;
-set_perm_recursive 0 0 755 644 $ramdisk/*;
-dump_boot;
-write_boot;
-EOF
+          # AnyKernel3 — SukiSU-Ultra for lisa (5.4 QGKI)
+          properties() { '
+          kernel.string=SukiSU-Ultra Kernel for Lisa (5.4 QGKI)
+          do.devicecheck=1
+          do.modules=1
+          do.systemless=1
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=lisa
+          device.name2=lisain
+          device.name3=lisa_global
+          supported.versions=
+          supported.patchlevels=
+          '; }
+          block=/dev/block/bootdevice/by-name/boot;
+          is_slot_device=auto;
+          ramdisk_compression=auto;
+          patch_vbmeta_flag=auto;
+          . tools/ak3-core.sh;
+          set_perm_recursive 0 0 755 644 $ramdisk/*;
+          dump_boot;
+          write_boot;
+          EOF
 
           cd ..
 
