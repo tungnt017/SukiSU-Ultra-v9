@@ -1,0 +1,215 @@
+name: "🔧 Fix AnyKernel3 ZIP (replace anykernel.sh)"
+
+on:
+  workflow_dispatch:
+    inputs:
+      artifact_run_id:
+        description: "🔢 Kernel build Run ID (e.g. 27193752255)"
+        required: true
+        type: string
+      artifact_repo:
+        description: "📦 Repo with build artifacts"
+        required: true
+        default: "tungnt017/SukiSU-Ultra-v9"
+        type: string
+
+jobs:
+  fix:
+    name: "🔧 Fix anykernel.sh & repack"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: "📥 Step 1: Download artifacts"
+        run: |
+          mkdir -p ${{ github.workspace }}/dl
+          cd ${{ github.workspace }}/dl
+
+          echo "📥 Downloading artifacts from run ${{ inputs.artifact_run_id }}..."
+          gh run download "${{ inputs.artifact_run_id }}" \
+            --repo "${{ inputs.artifact_repo }}" \
+            --dir ./artifacts/ 2>&1
+
+          echo ""
+          echo "📋 All downloaded files:"
+          find ./artifacts/ -type f | sort
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: "🔍 Step 2: Find AnyKernel3 ZIP"
+        run: |
+          cd ${{ github.workspace }}/dl
+
+          echo "🔍 Searching for AnyKernel3 ZIP..."
+          AK_ZIP=""
+          while IFS= read -r f; do
+            if file "$f" | grep -qi "zip\|archive"; then
+              AK_ZIP="$f"
+              echo "✅ Found ZIP: $AK_ZIP"
+              break
+            fi
+          done < <(find ./artifacts/ -name "*.zip" -type f 2>/dev/null)
+
+          if [ -z "$AK_ZIP" ]; then
+            echo "❌ No ZIP found in artifacts!"
+            find ./artifacts/ -type f
+            exit 1
+          fi
+
+          echo "AK_ZIP=$AK_ZIP" >> $GITHUB_ENV
+
+          echo ""
+          echo "📋 ZIP contents:"
+          unzip -l "$AK_ZIP"
+
+      - name: "📂 Step 3: Extract ZIP"
+        run: |
+          cd ${{ github.workspace }}/dl
+          mkdir -p repack
+          unzip -o "${{ env.AK_ZIP }}" -d repack/
+
+          echo "📋 Extracted files:"
+          find repack/ -type f | sort
+
+      - name: "🐛 Step 4: Show BROKEN anykernel.sh"
+        run: |
+          cd ${{ github.workspace }}/dl/repack
+
+          echo "════════════════════════════════════════════════════"
+          echo "🐛 CURRENT (broken) anykernel.sh:"
+          echo "════════════════════════════════════════════════════"
+          if [ -f anykernel.sh ]; then
+            cat anykernel.sh
+            echo ""
+            echo "🔍 Checking critical lines..."
+            grep -q "block=" anykernel.sh && echo "  ✅ block= exists" || echo "  ❌ block= MISSING!"
+            grep -q "is_slot_device=" anykernel.sh && echo "  ✅ is_slot_device= exists" || echo "  ❌ is_slot_device= MISSING!"
+            grep -q "split_boot" anykernel.sh && echo "  ✅ split_boot exists" || echo "  ❌ split_boot MISSING!"
+            grep -q "flash_boot" anykernel.sh && echo "  ✅ flash_boot exists" || echo "  ❌ flash_boot MISSING!"
+          else
+            echo "❌ anykernel.sh not found!"
+          fi
+
+      - name: "✅ Step 5: Replace with CORRECT anykernel.sh"
+        run: |
+          cd ${{ github.workspace }}/dl/repack
+
+          cat > anykernel.sh << 'FIXED_AKSH'
+          # AnyKernel3 Ramdisk Mod Script
+          # osm0sis @ xda-developers
+
+          properties() { '
+          kernel.string=SukiSU-Ultra-ManualHook for Xiaomi 11 Lite NE 5G (lisa)
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=1
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=lisa
+          device.name2=lisain
+          device.name3=lisanin
+          supported.versions=
+          supported.patchlevels=
+          '; }
+
+          # CRITICAL: partition and slot config BEFORE sourcing ak3-core
+          block=/dev/block/bootdevice/by-name/boot;
+          is_slot_device=auto;
+          ramdisk_compression=auto;
+          patch_vbmeta_flag=auto;
+
+          . tools/ak3-core.sh;
+
+          split_boot;
+          flash_boot;
+          flash_dtbo;
+          FIXED_AKSH
+
+          # Remove leading whitespace from heredoc
+          sed -i 's/^          //' anykernel.sh
+
+          echo "════════════════════════════════════════════════════"
+          echo "✅ NEW anykernel.sh:"
+          echo "════════════════════════════════════════════════════"
+          cat anykernel.sh
+
+      - name: "🔍 Step 6: Verify fix"
+        run: |
+          cd ${{ github.workspace }}/dl/repack
+
+          echo "🔍 Verifying critical lines..."
+          ALL_OK=true
+
+          for pattern in \
+            "block=/dev/block/bootdevice/by-name/boot" \
+            "is_slot_device=auto" \
+            "ramdisk_compression=auto" \
+            "patch_vbmeta_flag=auto" \
+            "tools/ak3-core.sh" \
+            "split_boot" \
+            "flash_boot" \
+            "device.name1=lisa"; do
+            if grep -q "$pattern" anykernel.sh; then
+              echo "  ✅ $pattern"
+            else
+              echo "  ❌ MISSING: $pattern"
+              ALL_OK=false
+            fi
+          done
+
+          if [ "$ALL_OK" = false ]; then
+            echo ""
+            echo "❌ Verification FAILED!"
+            exit 1
+          fi
+
+          echo ""
+          echo "✅ All critical lines verified!"
+
+      - name: "📦 Step 7: Repack ZIP"
+        run: |
+          cd ${{ github.workspace }}/dl/repack
+          TIMESTAMP=$(date +%Y%m%d-%H%M)
+
+          # Get original ZIP name for reference
+          ORIG_NAME=$(basename "${{ env.AK_ZIP }}" .zip)
+          ZIP_NAME="${ORIG_NAME}-FIXED.zip"
+
+          zip -r9 "${{ github.workspace }}/$ZIP_NAME" . -x ".git*"
+
+          echo ""
+          echo "════════════════════════════════════════════════════"
+          echo "✅ FIXED ZIP: $ZIP_NAME"
+          echo "   Size: $(stat -c%s "${{ github.workspace }}/$ZIP_NAME" | numfmt --to=iec)"
+          echo "════════════════════════════════════════════════════"
+
+          echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
+
+      - name: "📤 Step 8: Upload fixed ZIP"
+        uses: actions/upload-artifact@v4
+        with:
+          name: "AnyKernel3-FIXED-lisa"
+          path: ${{ github.workspace }}/${{ env.ZIP_NAME }}
+          retention-days: 30
+
+      - name: "📊 Summary"
+        run: |
+          echo ""
+          echo "╔══════════════════════════════════════════════════╗"
+          echo "║  ✅ ANYKERNEL3 ZIP FIXED!                        ║"
+          echo "╚══════════════════════════════════════════════════╝"
+          echo ""
+          echo "  Source run:  ${{ inputs.artifact_run_id }}"
+          echo "  Source repo: ${{ inputs.artifact_repo }}"
+          echo "  Output:      ${{ env.ZIP_NAME }}"
+          echo ""
+          echo "  Fixed:"
+          echo "    + block=/dev/block/bootdevice/by-name/boot"
+          echo "    + is_slot_device=auto"
+          echo "    + ramdisk_compression=auto"
+          echo "    + patch_vbmeta_flag=auto"
+          echo "    + split_boot (was dump_boot)"
+          echo "    + flash_boot (was write_boot)"
+          echo ""
+          echo "  📱 Flash via:"
+          echo "    adb reboot recovery"
+          echo "    adb sideload ${{ env.ZIP_NAME }}"
