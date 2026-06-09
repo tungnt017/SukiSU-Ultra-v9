@@ -1,0 +1,156 @@
+name: "🔧 Fix & Repack AnyKernel3 ZIP"
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: "🔢 Kernel build Run ID"
+        required: true
+        type: string
+      build_repo:
+        description: "📦 Repo with build artifacts"
+        required: true
+        default: "tungnt017/SukiSU-Ultra-v9"
+        type: string
+
+jobs:
+  fix-repack:
+    name: "🔧 Fix anykernel.sh & repack"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: "📥 Step 1: Download artifacts"
+        run: |
+          mkdir -p work && cd work
+          echo "📥 Downloading from run ${{ inputs.build_run_id }}..."
+          gh run download "${{ inputs.build_run_id }}" \
+            --repo "${{ inputs.build_repo }}" \
+            --dir ./artifacts/ 2>&1
+          echo ""
+          echo "📋 Downloaded:"
+          find ./artifacts/ -type f | sort
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: "🔍 Step 2: Find ZIP"
+        run: |
+          cd work
+          AK_ZIP=""
+          while IFS= read -r f; do
+            if file "$f" | grep -qi "zip\|archive"; then
+              AK_ZIP="$f"; break
+            fi
+          done < <(find ./artifacts/ -name "*.zip" -type f)
+          [ -z "$AK_ZIP" ] && { echo "❌ No ZIP!"; find ./artifacts/ -type f; exit 1; }
+          echo "✅ Found: $AK_ZIP"
+          unzip -l "$AK_ZIP"
+          echo "AK_ZIP=$AK_ZIP" >> $GITHUB_ENV
+
+      - name: "📂 Step 3: Extract"
+        run: |
+          cd work && mkdir -p repack
+          unzip -o "${{ env.AK_ZIP }}" -d repack/
+
+      - name: "🐛 Step 4: Show broken anykernel.sh"
+        run: |
+          cd work/repack
+          echo "═══ CURRENT anykernel.sh: ═══"
+          [ -f anykernel.sh ] && cat anykernel.sh || echo "(missing)"
+          echo ""
+          for p in "block=" "is_slot_device=" "split_boot" "flash_boot" "do.modules="; do
+            grep -q "$p" anykernel.sh 2>/dev/null && echo "  ✅ $p" || echo "  ❌ $p MISSING"
+          done
+
+      - name: "📦 Step 5: Collect modules"
+        run: |
+          cd work
+          mkdir -p repack/modules/vendor/lib/modules
+          MOD_COUNT=0
+          while IFS= read -r ko; do
+            cp "$ko" repack/modules/vendor/lib/modules/
+            MOD_COUNT=$((MOD_COUNT+1))
+          done < <(find ./artifacts/ -name "*.ko" -type f 2>/dev/null)
+          if [ "$MOD_COUNT" -eq 0 ]; then
+            echo "⚠️ No .ko modules in artifacts"
+            rm -rf repack/modules
+          else
+            echo "✅ $MOD_COUNT modules found"
+          fi
+          echo "MOD_COUNT=$MOD_COUNT" >> $GITHUB_ENV
+
+      - name: "✅ Step 6: Write FIXED anykernel.sh"
+        run: |
+          cd work/repack
+          [ "${{ env.MOD_COUNT }}" -gt 0 ] && DO_MOD=1 || DO_MOD=0
+
+          cat > anykernel.sh << FIXEOF
+# AnyKernel3 Ramdisk Mod Script
+# osm0sis @ xda-developers
+
+properties() { '
+kernel.string=SukiSU-Ultra-ManualHook for Xiaomi 11 Lite NE 5G (lisa)
+do.devicecheck=1
+do.modules=${DO_MOD}
+do.systemless=1
+do.cleanup=1
+do.cleanuponabort=0
+device.name1=lisa
+device.name2=lisain
+device.name3=lisanin
+supported.versions=
+supported.patchlevels=
+'; }
+
+block=/dev/block/bootdevice/by-name/boot;
+is_slot_device=auto;
+ramdisk_compression=auto;
+patch_vbmeta_flag=auto;
+
+. tools/ak3-core.sh;
+
+split_boot;
+flash_boot;
+flash_dtbo;
+FIXEOF
+
+          echo "═══ FIXED anykernel.sh: ═══"
+          cat anykernel.sh
+
+      - name: "🔍 Step 7: Verify"
+        run: |
+          cd work/repack
+          OK=true
+          for p in "block=/dev/block/bootdevice/by-name/boot" "is_slot_device=auto" \
+            "ramdisk_compression=auto" "split_boot" "flash_boot" "device.name1=lisa"; do
+            grep -q "$p" anykernel.sh && echo "  ✅ $p" || { echo "  ❌ $p"; OK=false; }
+          done
+          ls Image* &>/dev/null && echo "  ✅ Kernel Image" || { echo "  ❌ No Image!"; OK=false; }
+          [ "$OK" = true ] || exit 1
+
+      - name: "📦 Step 8: Repack"
+        run: |
+          cd work/repack
+          ORIG=$(basename "${{ env.AK_ZIP }}" .zip)
+          ZIP_NAME="${ORIG}-FIXED.zip"
+          zip -r9 "${{ github.workspace }}/$ZIP_NAME" . -x ".git*"
+          echo "✅ $ZIP_NAME ($(stat -c%s "${{ github.workspace }}/$ZIP_NAME" | numfmt --to=iec))"
+          echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
+
+      - name: "📤 Step 9: Upload"
+        uses: actions/upload-artifact@v4
+        with:
+          name: "AnyKernel3-FIXED-lisa"
+          path: ${{ github.workspace }}/${{ env.ZIP_NAME }}
+          retention-days: 30
+
+      - name: "📊 Summary"
+        run: |
+          echo "╔═════════════════════════════════════════╗"
+          echo "║  ✅ ANYKERNEL3 FIXED & REPACKED         ║"
+          echo "╚═════════════════════════════════════════╝"
+          echo "  Source: ${{ inputs.build_run_id }}"
+          echo "  Output: ${{ env.ZIP_NAME }}"
+          echo "  Modules: ${{ env.MOD_COUNT }}"
+          echo ""
+          echo "  📱 Flash: adb sideload ${{ env.ZIP_NAME }}"
+          [ "${{ env.MOD_COUNT }}" -eq 0 ] && echo "  ⚠️ No modules — touch may not work. Rebuild with v13."

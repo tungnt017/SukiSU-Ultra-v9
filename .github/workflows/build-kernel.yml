@@ -8,26 +8,19 @@ on:
         required: true
         default: "main"
         type: choice
-        options:
-          - main
-          - susfs-main
-          - susfs-test
+        options: [main, susfs-main, susfs-test]
       apply_optional_patches:
-        description: "🔧 Apply optional patches (Safe Mode input.c hook)"
+        description: "🔧 Apply optional patches (input.c)"
         required: true
         default: "false"
         type: choice
-        options:
-          - "true"
-          - "false"
+        options: ["true", "false"]
       clang_version:
         description: "⚙️ Clang toolchain"
         required: true
         default: "proton"
         type: choice
-        options:
-          - proton
-          - zyc
+        options: [proton, zyc]
 
 env:
   KERNEL_REPO: https://github.com/PixelExperience-Devices/kernel_xiaomi_lisa
@@ -53,7 +46,9 @@ jobs:
             build-essential bc bison flex libssl-dev libelf-dev \
             git curl wget zip unzip python3 python-is-python3 \
             gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
-            ca-certificates lz4 xz-utils cpio file
+            ca-certificates lz4 xz-utils cpio file \
+            lld llvm
+          echo "✅ Dependencies installed (including lld/llvm fallback)"
 
       - name: "🐧 Step 3: Clone kernel source"
         run: |
@@ -71,10 +66,8 @@ jobs:
           cd $WORK_DIR/kernel_source
           for h in susfs.h susfs_def.h susfs_redirect.h; do
             [ -f "include/linux/$h" ] && continue
-            echo "#ifndef _LINUX_$(echo $h | tr 'a-z.' 'A-Z_')" > "include/linux/$h"
-            echo "#define _LINUX_$(echo $h | tr 'a-z.' 'A-Z_')" >> "include/linux/$h"
-            echo "#include <linux/types.h>" >> "include/linux/$h"
-            echo "#endif" >> "include/linux/$h"
+            GUARD="_LINUX_$(echo $h | tr 'a-z.' 'A-Z_')"
+            printf '#ifndef %s\n#define %s\n#include <linux/types.h>\n#endif\n' "$GUARD" "$GUARD" > "include/linux/$h"
             echo "  ✅ Created stub: include/linux/$h"
           done
 
@@ -117,9 +110,52 @@ jobs:
             echo "  ✅ Fix 4: selinux_hide_stub.c"
           fi
 
-      - name: "⚙️ Step 8: Modify defconfig"
+      # ═══════════════════════════════════════════════════════
+      # Step 8: Setup toolchain BEFORE defconfig
+      # v13-fix: moved UP so ld.lld is available for all steps
+      # ═══════════════════════════════════════════════════════
+      - name: "🔧 Step 8: Setup toolchain"
+        run: |
+          if [ "${{ inputs.clang_version }}" = "proton" ]; then
+            echo "📥 Downloading Proton Clang..."
+            git clone --depth=1 https://github.com/kdrag0n/proton-clang.git $WORK_DIR/toolchain
+            CLANG_BIN="$WORK_DIR/toolchain/bin"
+          else
+            echo "📥 Downloading ZyCromerZ Clang..."
+            mkdir -p $WORK_DIR/toolchain
+            URL=$(curl -s https://api.github.com/repos/ZyCromerZ/Clang/releases/latest | grep "browser_download_url.*tar.gz" | head -1 | cut -d'"' -f4)
+            if [ -n "$URL" ]; then
+              wget -q "$URL" -O clang.tar.gz && tar xzf clang.tar.gz -C $WORK_DIR/toolchain && rm clang.tar.gz
+            else
+              echo "⚠️ ZyC failed, fallback to Proton..."
+              git clone --depth=1 https://github.com/kdrag0n/proton-clang.git $WORK_DIR/toolchain
+            fi
+            CLANG_BIN=$(dirname "$(find $WORK_DIR/toolchain -name clang -type f -executable | head -1)")
+          fi
+
+          echo "CLANG_BIN=$CLANG_BIN" >> $GITHUB_ENV
+          export PATH="$CLANG_BIN:$PATH"
+
+          echo "✅ Toolchain ready"
+          clang --version 2>/dev/null | head -1 || "$CLANG_BIN/clang" --version | head -1
+
+          # Verify ld.lld is available
+          if command -v ld.lld &>/dev/null; then
+            echo "✅ ld.lld found: $(which ld.lld)"
+          elif [ -f "$CLANG_BIN/ld.lld" ]; then
+            echo "✅ ld.lld in clang bin: $CLANG_BIN/ld.lld"
+          else
+            echo "⚠️ ld.lld from clang not found, using system lld"
+            which lld 2>/dev/null || echo "⚠️ System lld also not found"
+          fi
+
+      # ═══════════════════════════════════════════════════════
+      # Step 9: Defconfig — NOW has toolchain in PATH
+      # ═══════════════════════════════════════════════════════
+      - name: "⚙️ Step 9: Modify defconfig"
         run: |
           cd $WORK_DIR/kernel_source
+          export PATH="${{ env.CLANG_BIN }}:$PATH"
 
           DC=$(find arch/$ARCH/configs -name "*lahaina-qgki*" -o -name "*lisa*" 2>/dev/null | head -1)
           [ -z "$DC" ] && { echo "❌ No defconfig!"; exit 1; }
@@ -127,45 +163,38 @@ jobs:
 
           sed -i '/CONFIG_KSU/d; /CONFIG_KPROBES/d; /CONFIG_KALLSYMS/d' "$DC"
           cat >> "$DC" << 'DEFCFG'
-          CONFIG_KSU=y
-          CONFIG_KSU_MANUAL_HOOK=y
-          # CONFIG_KPROBES is not set
-          CONFIG_KALLSYMS=y
-          CONFIG_KALLSYMS_ALL=y
-          # CONFIG_KSU_SUSFS is not set
-          # CONFIG_KSU_SUSFS_SUS_PATH is not set
-          # CONFIG_KSU_SUSFS_SUS_MOUNT is not set
-          # CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT is not set
-          # CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT is not set
-          # CONFIG_KSU_SUSFS_SUS_KSTAT is not set
-          # CONFIG_KSU_SUSFS_SUS_OVERLAYFS is not set
-          # CONFIG_KSU_SUSFS_TRY_UMOUNT is not set
-          # CONFIG_KSU_SUSFS_SPOOF_UNAME is not set
-          # CONFIG_KSU_SUSFS_ENABLE_LOG is not set
-          # CONFIG_KSU_SUSFS_OPEN_REDIRECT is not set
-          # CONFIG_KSU_SUSFS_SUS_SU is not set
-          DEFCFG
+CONFIG_KSU=y
+CONFIG_KSU_MANUAL_HOOK=y
+# CONFIG_KPROBES is not set
+CONFIG_KALLSYMS=y
+CONFIG_KALLSYMS_ALL=y
+# CONFIG_KSU_SUSFS is not set
+# CONFIG_KSU_SUSFS_SUS_PATH is not set
+# CONFIG_KSU_SUSFS_SUS_MOUNT is not set
+# CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT is not set
+# CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT is not set
+# CONFIG_KSU_SUSFS_SUS_KSTAT is not set
+# CONFIG_KSU_SUSFS_SUS_OVERLAYFS is not set
+# CONFIG_KSU_SUSFS_TRY_UMOUNT is not set
+# CONFIG_KSU_SUSFS_SPOOF_UNAME is not set
+# CONFIG_KSU_SUSFS_ENABLE_LOG is not set
+# CONFIG_KSU_SUSFS_OPEN_REDIRECT is not set
+# CONFIG_KSU_SUSFS_SUS_SU is not set
+DEFCFG
 
           DC_NAME=$(basename "$DC")
-          make O=out ARCH=$ARCH $DC_NAME 2>&1 | tee $WORK_DIR/build_defconfig.log
+          make O=out ARCH=$ARCH \
+            CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            LD=ld.lld AR=llvm-ar NM=llvm-nm \
+            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
+            $DC_NAME 2>&1 | tee $WORK_DIR/build_defconfig.log
 
           # Force disable SUSFS in .config
           sed -i 's/^CONFIG_KSU_SUSFS.*=y$/# & is not set/' out/.config 2>/dev/null
+          echo ""
+          echo "📋 KSU configs:"
           grep CONFIG_KSU out/.config || true
-
-      - name: "🔧 Step 9: Setup toolchain"
-        run: |
-          if [ "${{ inputs.clang_version }}" = "proton" ]; then
-            git clone --depth=1 https://github.com/kdrag0n/proton-clang.git $WORK_DIR/toolchain
-            CLANG_BIN="$WORK_DIR/toolchain/bin"
-          else
-            mkdir -p $WORK_DIR/toolchain
-            URL=$(curl -s https://api.github.com/repos/ZyCromerZ/Clang/releases/latest | grep "browser_download_url.*tar.gz" | head -1 | cut -d'"' -f4)
-            [ -n "$URL" ] && wget -q "$URL" -O clang.tar.gz && tar xzf clang.tar.gz -C $WORK_DIR/toolchain && rm clang.tar.gz
-            CLANG_BIN=$(dirname "$(find $WORK_DIR/toolchain -name clang -type f -executable | head -1)")
-          fi
-          echo "CLANG_BIN=$CLANG_BIN" >> $GITHUB_ENV
-          "$CLANG_BIN/clang" --version | head -1
 
       - name: "🔨 Step 10: Build kernel + modules"
         run: |
@@ -178,36 +207,42 @@ jobs:
           KC="$KC -Wno-int-conversion -Wno-unused-function -Wno-gnu-offsetof-extensions"
           KC="$KC -Wno-single-bit-bitfield-constant-conversion -Wno-array-parameter"
 
-          MAKE_ARGS="O=out ARCH=$ARCH CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- LD=ld.lld AR=llvm-ar NM=llvm-nm \
+          echo "🔨 Building kernel..."
+          echo "   PATH includes: ${{ env.CLANG_BIN }}"
+          echo "   ld.lld: $(which ld.lld)"
+          echo ""
+
+          make O=out ARCH=$ARCH \
+            CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            LD=ld.lld AR=llvm-ar NM=llvm-nm \
             OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
-            KCFLAGS='$KC'"
+            KCFLAGS="$KC" \
+            -j$(nproc) 2>&1 | tee $WORK_DIR/build_kernel.log
 
-          # Build kernel + modules
-          eval make $MAKE_ARGS -j$(nproc) 2>&1 | tee $WORK_DIR/build_kernel.log
-
-          # Install modules to a staging directory
+          # Install modules
           echo ""
           echo "📦 Installing modules..."
-          eval make $MAKE_ARGS INSTALL_MOD_PATH=$WORK_DIR/modules_out \
-            INSTALL_MOD_STRIP=1 modules_install 2>&1 || echo "⚠️ modules_install returned non-zero"
+          make O=out ARCH=$ARCH \
+            CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            LD=ld.lld AR=llvm-ar NM=llvm-nm \
+            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
+            INSTALL_MOD_PATH=$WORK_DIR/modules_out \
+            INSTALL_MOD_STRIP=1 \
+            modules_install 2>&1 || echo "⚠️ modules_install non-zero exit"
 
           IMG=$(find out/arch/$ARCH/boot -name "Image*" -type f | head -1)
-          [ -z "$IMG" ] && { echo "❌ BUILD FAILED"; tail -50 $WORK_DIR/build_kernel.log; exit 1; }
+          [ -z "$IMG" ] && { echo "❌ BUILD FAILED"; tail -80 $WORK_DIR/build_kernel.log; exit 1; }
+          echo ""
           echo "✅ BUILD SUCCESS: $IMG ($(stat -c%s "$IMG" | numfmt --to=iec))"
-
           echo ""
-          echo "📋 Built modules:"
-          find out/ -name "*.ko" -type f | sort
-          echo ""
-          echo "📋 Installed modules:"
-          find $WORK_DIR/modules_out/ -name "*.ko" -type f 2>/dev/null | sort || echo "(none from modules_install)"
+          echo "📋 Modules built:"
+          find out/ -name "*.ko" -type f | wc -l
+          echo "📋 Critical modules:"
+          find out/ -name "goodix_core.ko" -o -name "wlan.ko" | sort
 
-      # ═══════════════════════════════════════════════════════
-      # Step 11: Package AnyKernel3 — v13: INCLUDES MODULES
-      # v12 bug: modules not included → touchscreen dead
-      # ═══════════════════════════════════════════════════════
-      - name: "📦 Step 11: Package AnyKernel3 (v13 — with modules)"
+      - name: "📦 Step 11: Package AnyKernel3 (with modules)"
         run: |
           cd $WORK_DIR
           TIMESTAMP=$(date +%Y%m%d-%H%M)
@@ -216,126 +251,103 @@ jobs:
           cd anykernel
           rm -rf patch ramdisk LICENSE README.md
 
-          # ───────────────────────────────────────────────────
-          # anykernel.sh — v13: do.modules=1
-          # ───────────────────────────────────────────────────
-          cat > anykernel.sh << 'ANYKERNEL_EOF'
-          # AnyKernel3 Ramdisk Mod Script
-          # osm0sis @ xda-developers
-          
-          properties() { '
-          kernel.string=SukiSU-Ultra-ManualHook for Xiaomi 11 Lite NE 5G (lisa)
-          do.devicecheck=1
-          do.modules=1
-          do.systemless=1
-          do.cleanup=1
-          do.cleanuponabort=0
-          device.name1=lisa
-          device.name2=lisain
-          device.name3=lisanin
-          supported.versions=
-          supported.patchlevels=
-          '; }
-          
-          block=/dev/block/bootdevice/by-name/boot;
-          is_slot_device=auto;
-          ramdisk_compression=auto;
-          patch_vbmeta_flag=auto;
-          
-          . tools/ak3-core.sh;
-          
-          split_boot;
-          flash_boot;
-          flash_dtbo;
-          ANYKERNEL_EOF
+          # ── anykernel.sh ──
+          cat > anykernel.sh << 'AKEOF'
+# AnyKernel3 Ramdisk Mod Script
+# osm0sis @ xda-developers
 
-          echo "📋 anykernel.sh created"
-          grep -q "do.modules=1" anykernel.sh && echo "  ✅ do.modules=1" || { echo "  ❌ do.modules WRONG"; exit 1; }
-          grep -q "block=" anykernel.sh && echo "  ✅ block= found" || { echo "  ❌ block= MISSING"; exit 1; }
-          grep -q "split_boot" anykernel.sh && echo "  ✅ split_boot found" || { echo "  ❌ split_boot MISSING"; exit 1; }
+properties() { '
+kernel.string=SukiSU-Ultra-ManualHook for Xiaomi 11 Lite NE 5G (lisa)
+do.devicecheck=1
+do.modules=1
+do.systemless=1
+do.cleanup=1
+do.cleanuponabort=0
+device.name1=lisa
+device.name2=lisain
+device.name3=lisanin
+supported.versions=
+supported.patchlevels=
+'; }
 
-          # ───────────────────────────────────────────────────
-          # Copy kernel Image
-          # ───────────────────────────────────────────────────
-          for img in Image Image.gz Image.gz-dtb; do
-            SRC="$WORK_DIR/kernel_source/out/arch/$ARCH/boot/$img"
-            if [ -f "$SRC" ]; then
-              cp "$SRC" .
-              echo "  ✅ Copied $img ($(stat -c%s "$SRC" | numfmt --to=iec))"
-              break
-            fi
+block=/dev/block/bootdevice/by-name/boot;
+is_slot_device=auto;
+ramdisk_compression=auto;
+patch_vbmeta_flag=auto;
+
+. tools/ak3-core.sh;
+
+split_boot;
+flash_boot;
+flash_dtbo;
+AKEOF
+
+          # Verify
+          grep -q "block=" anykernel.sh && echo "✅ block=" || exit 1
+          grep -q "do.modules=1" anykernel.sh && echo "✅ do.modules=1" || exit 1
+          grep -q "split_boot" anykernel.sh && echo "✅ split_boot" || exit 1
+
+          # ── Copy kernel ──
+          for img in Image Image.gz; do
+            [ -f "$WORK_DIR/kernel_source/out/arch/$ARCH/boot/$img" ] && \
+              cp "$WORK_DIR/kernel_source/out/arch/$ARCH/boot/$img" . && \
+              echo "✅ $img copied" && break
           done
 
-          # Copy DTBO
-          DTBO="$WORK_DIR/kernel_source/out/arch/$ARCH/boot/dtbo.img"
-          [ -f "$DTBO" ] && cp "$DTBO" . && echo "  ✅ Copied dtbo.img"
+          # ── Copy DTBO ──
+          [ -f "$WORK_DIR/kernel_source/out/arch/$ARCH/boot/dtbo.img" ] && \
+            cp "$WORK_DIR/kernel_source/out/arch/$ARCH/boot/dtbo.img" . && \
+            echo "✅ dtbo.img copied"
 
-          # ───────────────────────────────────────────────────
-          # MODULES — v13 FIX: Include .ko files
-          # Lisa uses /vendor/lib/modules/ for kernel modules
-          # ───────────────────────────────────────────────────
+          # ── Collect modules ──
           echo ""
-          echo "📦 Collecting kernel modules..."
-          MODULES_DST="modules/vendor/lib/modules"
-          mkdir -p "$MODULES_DST"
-
-          # Method 1: From modules_install output
+          echo "📦 Collecting modules..."
+          MODDIR="modules/vendor/lib/modules"
+          mkdir -p "$MODDIR"
           MOD_COUNT=0
+
+          # From modules_install
           if [ -d "$WORK_DIR/modules_out" ]; then
             while IFS= read -r ko; do
-              cp "$ko" "$MODULES_DST/"
-              MOD_COUNT=$((MOD_COUNT + 1))
-            done < <(find "$WORK_DIR/modules_out" -name "*.ko" -type f 2>/dev/null)
+              cp "$ko" "$MODDIR/"
+              MOD_COUNT=$((MOD_COUNT+1))
+            done < <(find "$WORK_DIR/modules_out" -name "*.ko" -type f)
           fi
 
-          # Method 2: Fallback — find .ko in build output
+          # Fallback: from build output
           if [ "$MOD_COUNT" -eq 0 ]; then
-            echo "  ℹ️ modules_install empty, collecting from build output..."
+            echo "  ℹ️ Fallback: collecting from out/"
             while IFS= read -r ko; do
-              BASENAME=$(basename "$ko")
-              [ ! -f "$MODULES_DST/$BASENAME" ] && cp "$ko" "$MODULES_DST/" && MOD_COUNT=$((MOD_COUNT + 1))
-            done < <(find "$WORK_DIR/kernel_source/out" -name "*.ko" -type f 2>/dev/null)
+              BN=$(basename "$ko")
+              [ ! -f "$MODDIR/$BN" ] && cp "$ko" "$MODDIR/" && MOD_COUNT=$((MOD_COUNT+1))
+            done < <(find "$WORK_DIR/kernel_source/out" -name "*.ko" -type f)
           fi
 
-          # Strip modules to reduce size
-          if [ "$MOD_COUNT" -gt 0 ] && command -v aarch64-linux-gnu-strip &>/dev/null; then
-            echo "  📏 Stripping modules..."
-            find "$MODULES_DST" -name "*.ko" -exec aarch64-linux-gnu-strip --strip-unneeded {} \; 2>/dev/null || true
+          # Strip
+          if [ "$MOD_COUNT" -gt 0 ]; then
+            aarch64-linux-gnu-strip --strip-unneeded "$MODDIR"/*.ko 2>/dev/null || true
           fi
 
-          echo ""
-          echo "  📋 Included modules ($MOD_COUNT total):"
-          find "$MODULES_DST" -name "*.ko" -type f | sort | while read -r m; do
-            echo "    $(basename "$m") ($(stat -c%s "$m" | numfmt --to=iec))"
+          echo "✅ $MOD_COUNT modules included"
+          for c in goodix_core.ko wlan.ko; do
+            find "$MODDIR" -name "$c" | grep -q . && echo "  ✅ $c" || echo "  ⚠️ $c not found"
           done
 
-          # Verify critical modules
-          echo ""
-          for critical in goodix_core.ko wlan.ko; do
-            if find "$MODULES_DST" -name "$critical" | grep -q .; then
-              echo "  ✅ CRITICAL: $critical included"
-            else
-              echo "  ⚠️ WARNING: $critical NOT found (may be built-in or different name)"
-            fi
-          done
-
-          # ───────────────────────────────────────────────────
-          # Create ZIP
-          # ───────────────────────────────────────────────────
+          # ── Create ZIP ──
           ZIP_NAME="SukiSU-Ultra-ManualHook-lisa-${TIMESTAMP}.zip"
           zip -r9 "$WORK_DIR/$ZIP_NAME" . -x ".git*"
           echo ""
-          echo "✅ Package: $ZIP_NAME ($(stat -c%s "$WORK_DIR/$ZIP_NAME" | numfmt --to=iec))"
+          echo "✅ $ZIP_NAME ($(stat -c%s "$WORK_DIR/$ZIP_NAME" | numfmt --to=iec))"
           echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
 
-      - name: "📤 Step 12: Upload kernel ZIP"
+      - name: "📤 Step 12: Upload ZIP"
         uses: actions/upload-artifact@v4
         with:
           name: "SukiSU-Ultra-ManualHook-${{ env.DEVICE }}"
           path: ${{ env.WORK_DIR }}/${{ env.ZIP_NAME }}
           retention-days: 30
 
-      - name: "📤 Step 12b: Upload kernel Image"
+      - name: "📤 Step 12b: Upload Image"
         uses: actions/upload-artifact@v4
         with:
           name: "kernel-${{ env.DEVICE }}"
@@ -345,7 +357,7 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
-      - name: "📤 Step 12c: Upload build logs"
+      - name: "📤 Step 12c: Upload logs"
         uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -354,21 +366,3 @@ jobs:
             ${{ env.WORK_DIR }}/build_defconfig.log
             ${{ env.WORK_DIR }}/build_kernel.log
           retention-days: 7
-
-      - name: "📊 Step 13: Summary"
-        if: always()
-        run: |
-          MOD_COUNT=$(find $WORK_DIR/anykernel/modules -name "*.ko" 2>/dev/null | wc -l)
-          echo ""
-          echo "╔══════════════════════════════════════════════════╗"
-          echo "║          BUILD SUMMARY — v13                     ║"
-          echo "╚══════════════════════════════════════════════════╝"
-          echo ""
-          echo "  🔧 Setup:      bash -s builtin"
-          echo "  📦 SUSFS:      DISABLED"
-          echo "  🔩 Hooks:      4 manual + optional input.c"
-          echo "  🩹 Patches:    4 source fixes"
-          echo "  ⚙️ KCFLAGS:    13 flags"
-          echo "  📱 Modules:    $MOD_COUNT .ko files included"
-          echo "  🖐️ Touch:      goodix_core.ko $(find $WORK_DIR/anykernel/modules -name 'goodix_core.ko' 2>/dev/null | head -1 | xargs -I{} echo '✅' || echo '⚠️')"
-          echo "  📶 WiFi:       wlan.ko $(find $WORK_DIR/anykernel/modules -name 'wlan.ko' 2>/dev/null | head -1 | xargs -I{} echo '✅' || echo '⚠️')"
