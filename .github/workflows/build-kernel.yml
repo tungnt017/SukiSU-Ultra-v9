@@ -1,4 +1,4 @@
-name: "🔨 Build SukiSU-Ultra Kernel (lisa) v10"
+name: "🔨 Build SukiSU-Ultra Kernel (lisa) v11"
 
 on:
   workflow_dispatch:
@@ -78,8 +78,6 @@ jobs:
           echo "   Mode: BUILTIN (compiled into kernel, for non-GKI manual hook)"
           echo ""
 
-          # ⚠️ IMPORTANT: "builtin" = built-in mode (CONFIG_KSU=y)
-          #    "main" = LKM mode (CONFIG_KSU=m) — WRONG for non-GKI!
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/${BRANCH}/kernel/setup.sh" | bash -s builtin
 
           echo ""
@@ -97,48 +95,40 @@ jobs:
           cd $WORK_DIR/kernel_source
 
           echo "📄 Creating SUSFS stub headers..."
-          echo "   (Needed because some KSU source files include susfs headers"
-          echo "    regardless of CONFIG_KSU_SUSFS setting)"
 
-          # susfs.h
           if [ ! -f include/linux/susfs.h ]; then
             cat > include/linux/susfs.h << 'STUB1'
           #ifndef _LINUX_SUSFS_H
           #define _LINUX_SUSFS_H
           #include <linux/types.h>
-          /* Stub header — SUSFS not integrated for this build */
-          #endif /* _LINUX_SUSFS_H */
+          #endif
           STUB1
-                      echo "  ✅ Created include/linux/susfs.h (stub)"
-                    else
-                      echo "  ℹ️ include/linux/susfs.h already exists"
-                    fi
-          
-                    # susfs_def.h
-                    if [ ! -f include/linux/susfs_def.h ]; then
-                      cat > include/linux/susfs_def.h << 'STUB2'
+            echo "  ✅ Created include/linux/susfs.h (stub)"
+          else
+            echo "  ℹ️ include/linux/susfs.h already exists"
+          fi
+
+          if [ ! -f include/linux/susfs_def.h ]; then
+            cat > include/linux/susfs_def.h << 'STUB2'
           #ifndef _LINUX_SUSFS_DEF_H
           #define _LINUX_SUSFS_DEF_H
-          /* Stub header — SUSFS definitions not available */
-          #endif /* _LINUX_SUSFS_DEF_H */
+          #endif
           STUB2
-                      echo "  ✅ Created include/linux/susfs_def.h (stub)"
-                    else
-                      echo "  ℹ️ include/linux/susfs_def.h already exists"
-                    fi
-          
-                    # susfs_redirect.h
-                    if [ ! -f include/linux/susfs_redirect.h ]; then
-                      cat > include/linux/susfs_redirect.h << 'STUB3'
+            echo "  ✅ Created include/linux/susfs_def.h (stub)"
+          else
+            echo "  ℹ️ include/linux/susfs_def.h already exists"
+          fi
+
+          if [ ! -f include/linux/susfs_redirect.h ]; then
+            cat > include/linux/susfs_redirect.h << 'STUB3'
           #ifndef _LINUX_SUSFS_REDIRECT_H
           #define _LINUX_SUSFS_REDIRECT_H
-          /* Stub header — SUSFS redirect not available */
-          #endif /* _LINUX_SUSFS_REDIRECT_H */
+          #endif
           STUB3
-                      echo "  ✅ Created include/linux/susfs_redirect.h (stub)"
-                    else
-                      echo "  ℹ️ include/linux/susfs_redirect.h already exists"
-                    fi
+            echo "  ✅ Created include/linux/susfs_redirect.h (stub)"
+          else
+            echo "  ℹ️ include/linux/susfs_redirect.h already exists"
+          fi
 
       # ── 6. Apply manual hooks ───────────────────────────────
       - name: "🔩 Step 6: Apply manual hooks"
@@ -181,12 +171,8 @@ jobs:
           fi
 
           # Fix 3: SukiSU-Ultra sulog/event.c — USER_ARG_NULL type mismatch
-          # user_arg_null_ptr() returns struct user_arg_ptr * (pointer)
-          # but ksu_sulog_capture() expects struct user_arg_ptr (value)
-          # Fix: dereference the pointer with (*)
           SULOG_FILE="drivers/kernelsu/sulog/event.c"
           if [ ! -f "$SULOG_FILE" ]; then
-            # Try alternative paths
             SULOG_FILE=$(find drivers/ -path "*/sulog/event.c" -type f 2>/dev/null | head -1)
           fi
           if [ -n "$SULOG_FILE" ] && [ -f "$SULOG_FILE" ]; then
@@ -195,19 +181,110 @@ jobs:
               sed -i 's/#define USER_ARG_NULL user_arg_null_ptr()/#define USER_ARG_NULL (*user_arg_null_ptr())/' "$SULOG_FILE"
               echo "  ✅ Fix 3: sulog/event.c (USER_ARG_NULL dereferenced)"
             elif grep -q 'USER_ARG_NULL' "$SULOG_FILE"; then
-              echo "  ℹ️ Fix 3: USER_ARG_NULL found but different format, trying broader fix..."
-              # Broader pattern: any line with user_arg_null_ptr() in a #define
               sed -i 's/user_arg_null_ptr()/(*user_arg_null_ptr())/' "$SULOG_FILE"
               echo "  ✅ Fix 3: Broad fix applied to sulog/event.c"
             else
               echo "  ℹ️ Fix 3: USER_ARG_NULL not found in sulog/event.c"
             fi
           else
-            echo "  ℹ️ Fix 3: sulog/event.c not found (may not exist in this version)"
+            echo "  ℹ️ Fix 3: sulog/event.c not found"
+          fi
+
+          # ══════════════════════════════════════════════════════════════
+          # Fix 4: Stub for missing SELinux hiding symbols
+          #
+          # When SUSFS is disabled, SukiSU-Ultra code still calls:
+          #   ksu_selinux_hide_handle_second_stage()
+          #   ksu_selinux_hide_handle_post_fs_data()
+          # These are defined in susfs code which is not compiled.
+          # Create empty stub implementations so the linker is happy.
+          # ══════════════════════════════════════════════════════════════
+          echo ""
+          echo "  🔗 Fix 4: Creating SELinux hiding stubs..."
+
+          STUB_DIR="drivers/kernelsu"
+          if [ ! -d "$STUB_DIR" ]; then
+            STUB_DIR=$(find drivers/ -type d -name "kernelsu" | head -1)
+          fi
+
+          if [ -z "$STUB_DIR" ] || [ ! -d "$STUB_DIR" ]; then
+            echo "  ❌ Fix 4: drivers/kernelsu directory not found!"
+          else
+            echo "  📍 KernelSU dir: $STUB_DIR"
+
+            # Create the stub C file
+            cat > "$STUB_DIR/selinux_hide_stub.c" << 'SELINUX_STUB'
+          /*
+           * selinux_hide_stub.c
+           *
+           * Stub implementations for SELinux hiding functions.
+           * When SUSFS (CONFIG_KSU_SUSFS) is disabled, these symbols are still
+           * referenced by SukiSU-Ultra core code but have no definition.
+           * This file provides empty implementations to satisfy the linker.
+           */
+          #include <linux/types.h>
+          #include <linux/printk.h>
+
+          void ksu_selinux_hide_handle_second_stage(void)
+          {
+              /* SUSFS disabled — SELinux hiding is a no-op */
+          }
+
+          void ksu_selinux_hide_handle_post_fs_data(void)
+          {
+              /* SUSFS disabled — SELinux hiding is a no-op */
+          }
+          SELINUX_STUB
+            echo "  ✅ Created $STUB_DIR/selinux_hide_stub.c"
+
+            # Add to build system (try Makefile first, then Kbuild)
+            ADDED_TO_BUILD=false
+
+            for BUILD_FILE in "$STUB_DIR/Makefile" "$STUB_DIR/Kbuild"; do
+              if [ -f "$BUILD_FILE" ]; then
+                if ! grep -q "selinux_hide_stub" "$BUILD_FILE"; then
+                  # Find existing obj-y or obj-$(CONFIG_KSU) line and append after it
+                  if grep -q 'obj-.*+=' "$BUILD_FILE"; then
+                    echo "" >> "$BUILD_FILE"
+                    echo "# Stub for SELinux hiding when SUSFS is disabled" >> "$BUILD_FILE"
+                    echo 'obj-y += selinux_hide_stub.o' >> "$BUILD_FILE"
+                  else
+                    echo 'obj-y += selinux_hide_stub.o' >> "$BUILD_FILE"
+                  fi
+                  echo "  ✅ Added selinux_hide_stub.o to $(basename $BUILD_FILE)"
+                  ADDED_TO_BUILD=true
+                  break
+                else
+                  echo "  ℹ️ selinux_hide_stub already in $(basename $BUILD_FILE)"
+                  ADDED_TO_BUILD=true
+                  break
+                fi
+              fi
+            done
+
+            if [ "$ADDED_TO_BUILD" = false ]; then
+              echo "  ⚠️ No Makefile/Kbuild found in $STUB_DIR"
+              echo "  📋 Directory contents:"
+              ls -la "$STUB_DIR/"
+              # Last resort: create a minimal Makefile entry
+              echo 'obj-y += selinux_hide_stub.o' >> "$STUB_DIR/Makefile"
+              echo "  ✅ Created Makefile with selinux_hide_stub.o"
+            fi
+
+            # Also check if there are subdirectories with their own build files
+            for SUBDIR in "$STUB_DIR"/*/; do
+              if [ -d "$SUBDIR" ]; then
+                for SF in "$SUBDIR/Makefile" "$SUBDIR/Kbuild"; do
+                  if [ -f "$SF" ] && grep -q "selinux_hide" "$SF" 2>/dev/null; then
+                    echo "  ℹ️ Found selinux reference in $SF"
+                  fi
+                done
+              fi
+            done
           fi
 
           echo ""
-          echo "✅ All compatibility patches done"
+          echo "✅ All compatibility patches done (4 fixes)"
 
       # ── 8. Modify defconfig ─────────────────────────────────
       - name: "⚙️ Step 8: Modify defconfig (KSU + disable SUSFS)"
@@ -259,8 +336,7 @@ jobs:
           echo "CONFIG_KALLSYMS_ALL=y" >> "$DEFCONFIG"
 
           # ══════════════════════════════════════════════════════
-          # ⚠️ DISABLE SUSFS — builtin mode enables it by default
-          #    but we don't have full susfs kernel patches
+          # ⚠️ DISABLE SUSFS — builtin enables it by default
           # ══════════════════════════════════════════════════════
           echo ""
           echo "🚫 Disabling SUSFS (not fully integrated)..."
@@ -322,24 +398,21 @@ jobs:
               tar -xzf clang.tar.gz -C toolchain/clang/
               rm clang.tar.gz
             else
-              echo "⚠️ ZyC download failed, falling back to Proton Clang..."
+              echo "⚠️ ZyC download failed, falling back to Proton..."
               git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/clang
             fi
           fi
 
-          # Verify
           CLANG_BIN="$WORK_DIR/toolchain/clang/bin"
           if [ -f "$CLANG_BIN/clang" ]; then
             echo "✅ Toolchain ready"
             "$CLANG_BIN/clang" --version | head -3
           else
-            CLANG_BIN=$(find $WORK_DIR/toolchain -name "clang" -type f -executable | head -1)
+            CLANG_BIN=$(dirname "$(find $WORK_DIR/toolchain -name "clang" -type f -executable | head -1)")
             if [ -n "$CLANG_BIN" ]; then
-              CLANG_BIN=$(dirname "$CLANG_BIN")
               echo "✅ Toolchain found at $CLANG_BIN"
             else
-              echo "❌ FATAL: Cannot find clang binary!"
-              find $WORK_DIR/toolchain -type f -name "clang*" | head -10
+              echo "❌ FATAL: Cannot find clang!"
               exit 1
             fi
           fi
@@ -354,7 +427,7 @@ jobs:
           CLANG_PATH="${{ env.CLANG_BIN }}"
           export PATH="$CLANG_PATH:$PATH"
 
-          # ── KCFLAGS: 13 flags to suppress newer Clang warnings ──
+          # 13 KCFLAGS
           KCFLAGS_VAL="-Wno-default-const-init-var-unsafe"
           KCFLAGS_VAL="$KCFLAGS_VAL -Wno-default-const-init-field-unsafe"
           KCFLAGS_VAL="$KCFLAGS_VAL -Wno-sometimes-uninitialized"
@@ -390,7 +463,6 @@ jobs:
 
           make "${MAKE_ARGS[@]}" -j$(nproc) 2>&1 | tee $WORK_DIR/build_kernel.log
 
-          # Check result
           if [ -f out/arch/$ARCH/boot/Image ]; then
             echo ""
             echo "════════════════════════════════════════════════════"
@@ -405,7 +477,6 @@ jobs:
             echo "════════════════════════════════════════════════════"
             echo "❌ BUILD FAILED!"
             echo "════════════════════════════════════════════════════"
-            echo "Last 50 lines of build log:"
             tail -50 $WORK_DIR/build_kernel.log
             exit 1
           fi
@@ -416,19 +487,14 @@ jobs:
           cd $WORK_DIR
           TIMESTAMP=$(date +%Y%m%d-%H%M)
 
-          echo "📦 Cloning AnyKernel3..."
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
-
           cd anykernel
-
-          # Remove example files
           rm -rf modules patch ramdisk LICENSE README.md
 
-          # Configure for lisa
           cat > anykernel.sh << 'AKSH'
           # AnyKernel3 Ramdisk Mod Script
           # osm0sis @ xda-developers
-          
+
           properties() { '
           kernel.string=SukiSU-Ultra-ManualHook for Xiaomi 11 Lite NE 5G (lisa)
           do.devicecheck=1
@@ -442,36 +508,33 @@ jobs:
           supported.versions=
           supported.patchlevels=
           '; }
-          
+
           . tools/ak3-core.sh;
-          
+
           set_perm_recursive 0 0 755 644 $ramdisk/*;
           dump_boot;
           write_boot;
           AKSH
 
-          # Copy kernel Image
-          if [ -f $WORK_DIR/kernel_source/out/arch/$ARCH/boot/Image ]; then
-            cp $WORK_DIR/kernel_source/out/arch/$ARCH/boot/Image .
-          elif [ -f $WORK_DIR/kernel_source/out/arch/$ARCH/boot/Image.gz ]; then
-            cp $WORK_DIR/kernel_source/out/arch/$ARCH/boot/Image.gz .
-          fi
+          # Copy kernel
+          for img in Image Image.gz; do
+            if [ -f $WORK_DIR/kernel_source/out/arch/$ARCH/boot/$img ]; then
+              cp $WORK_DIR/kernel_source/out/arch/$ARCH/boot/$img .
+              break
+            fi
+          done
 
-          # Copy DTB/DTBO if exists
-          if [ -f $WORK_DIR/kernel_source/out/arch/$ARCH/boot/dtb ]; then
-            cp $WORK_DIR/kernel_source/out/arch/$ARCH/boot/dtb .
-          fi
-          if [ -f $WORK_DIR/kernel_source/out/arch/$ARCH/boot/dtbo.img ]; then
-            cp $WORK_DIR/kernel_source/out/arch/$ARCH/boot/dtbo.img .
-          fi
+          # Copy DTB/DTBO
+          for dt in dtb dtbo.img; do
+            if [ -f $WORK_DIR/kernel_source/out/arch/$ARCH/boot/$dt ]; then
+              cp $WORK_DIR/kernel_source/out/arch/$ARCH/boot/$dt .
+            fi
+          done
 
-          # Create ZIP
           ZIP_NAME="SukiSU-Ultra-ManualHook-lisa-${TIMESTAMP}.zip"
           zip -r9 "$WORK_DIR/$ZIP_NAME" . -x ".git*"
-
           echo "✅ AnyKernel3 package: $ZIP_NAME"
           ls -lh "$WORK_DIR/$ZIP_NAME"
-
           echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
 
       # ── 12. Upload artifacts ────────────────────────────────
@@ -508,7 +571,7 @@ jobs:
         run: |
           echo ""
           echo "╔══════════════════════════════════════════════════╗"
-          echo "║          BUILD SUMMARY — v10                     ║"
+          echo "║          BUILD SUMMARY — v11                     ║"
           echo "╚══════════════════════════════════════════════════╝"
           echo ""
           echo "  Device:          $DEVICE"
@@ -520,6 +583,7 @@ jobs:
           echo "  Clang:           ${{ github.event.inputs.clang_version }}"
           echo "  Optional hooks:  ${{ github.event.inputs.apply_optional_patches }}"
           echo "  KCFLAGS:         13 suppression flags"
+          echo "  Source patches:  4 fixes"
           echo ""
           if [ -f "$WORK_DIR/$ZIP_NAME" ]; then
             echo "  ✅ Output: $ZIP_NAME"
