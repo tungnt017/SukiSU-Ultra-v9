@@ -607,37 +607,37 @@ jobs:
 
           # Configure anykernel.sh for lisa (Snapdragon 778G / SM7325)
           cat > anykernel.sh << 'ANYKERNEL_EOF'
-# AnyKernel3 Ramdisk Mod Script
-# osm0sis @ xda-developers
-# SukiSU-Ultra for Xiaomi 11 Lite NE 5G (lisa) — Kernel 5.4
-
-properties() { '
-kernel.string=SukiSU-Ultra Kernel for Lisa (5.4 QGKI)
-do.devicecheck=1
-do.modules=0
-do.systemless=1
-do.cleanup=1
-do.cleanuponabort=0
-device.name1=lisa
-device.name2=lisain
-device.name3=lisa_global
-supported.versions=
-supported.patchlevels=
-'; }
-
-# Shell variables
-block=/dev/block/bootdevice/by-name/boot;
-is_slot_device=auto;
-ramdisk_compression=auto;
-patch_vbmeta_flag=auto;
-
-. tools/ak3-core.sh;
-
-set_perm_recursive 0 0 755 644 $ramdisk/*;
-
-dump_boot;
-write_boot;
-ANYKERNEL_EOF
+          # AnyKernel3 Ramdisk Mod Script
+          # osm0sis @ xda-developers
+          # SukiSU-Ultra for Xiaomi 11 Lite NE 5G (lisa) — Kernel 5.4
+          
+          properties() { '
+          kernel.string=SukiSU-Ultra Kernel for Lisa (5.4 QGKI)
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=1
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=lisa
+          device.name2=lisain
+          device.name3=lisa_global
+          supported.versions=
+          supported.patchlevels=
+          '; }
+          
+          # Shell variables
+          block=/dev/block/bootdevice/by-name/boot;
+          is_slot_device=auto;
+          ramdisk_compression=auto;
+          patch_vbmeta_flag=auto;
+          
+          . tools/ak3-core.sh;
+          
+          set_perm_recursive 0 0 755 644 $ramdisk/*;
+          
+          dump_boot;
+          write_boot;
+          ANYKERNEL_EOF
 
           # Copy kernel image (prefer Image.gz for 5.4 QGKI)
           cd ..
