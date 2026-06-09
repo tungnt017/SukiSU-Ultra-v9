@@ -84,34 +84,34 @@ jobs:
           [ "${{ env.MOD_COUNT }}" -gt 0 ] && DO_MOD=1 || DO_MOD=0
 
           cat > anykernel.sh << FIXEOF
-# AnyKernel3 Ramdisk Mod Script
-# osm0sis @ xda-developers
-
-properties() { '
-kernel.string=SukiSU-Ultra-ManualHook for Xiaomi 11 Lite NE 5G (lisa)
-do.devicecheck=1
-do.modules=${DO_MOD}
-do.systemless=1
-do.cleanup=1
-do.cleanuponabort=0
-device.name1=lisa
-device.name2=lisain
-device.name3=lisanin
-supported.versions=
-supported.patchlevels=
-'; }
-
-block=/dev/block/bootdevice/by-name/boot;
-is_slot_device=auto;
-ramdisk_compression=auto;
-patch_vbmeta_flag=auto;
-
-. tools/ak3-core.sh;
-
-split_boot;
-flash_boot;
-flash_dtbo;
-FIXEOF
+        # AnyKernel3 Ramdisk Mod Script
+        # osm0sis @ xda-developers
+        
+        properties() { '
+        kernel.string=SukiSU-Ultra-ManualHook for Xiaomi 11 Lite NE 5G (lisa)
+        do.devicecheck=1
+        do.modules=${DO_MOD}
+        do.systemless=1
+        do.cleanup=1
+        do.cleanuponabort=0
+        device.name1=lisa
+        device.name2=lisain
+        device.name3=lisanin
+        supported.versions=
+        supported.patchlevels=
+        '; }
+        
+        block=/dev/block/bootdevice/by-name/boot;
+        is_slot_device=auto;
+        ramdisk_compression=auto;
+        patch_vbmeta_flag=auto;
+        
+        . tools/ak3-core.sh;
+        
+        split_boot;
+        flash_boot;
+        flash_dtbo;
+        FIXEOF
 
           echo "═══ FIXED anykernel.sh: ═══"
           cat anykernel.sh
