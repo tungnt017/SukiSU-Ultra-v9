@@ -237,172 +237,172 @@ jobs:
 
           # Add extern declaration before do_execve function
           sed -i '/^int do_execve(struct filename \*filename,$/i\
-#ifdef CONFIG_KSU_MANUAL_HOOK\
-extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,\
-\t\t\t\tvoid *argv, void *envp, int *flags);\
-#endif' fs/exec.c
-
-          # Insert hook call inside do_execveat_common (kernel 5.4)
-          sed -i '/static int do_execveat_common(int fd, struct filename \*filename,/,/retval = count(argv, MAX_ARG_STRINGS);/{
-            /retval = count(argv, MAX_ARG_STRINGS);/i\
-#ifdef CONFIG_KSU_MANUAL_HOOK\
-\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\
-#endif
-          }' fs/exec.c
-
-          # Verify
-          if grep -q "ksu_handle_execveat" fs/exec.c; then
-            echo "  ✅ fs/exec.c patched successfully"
-          else
-            echo "  ❌ fs/exec.c — trying alternative (patch do_execve directly)..."
-            sed -i '/^int do_execve(/,/^{/{
-              /^{/a\
-#ifdef CONFIG_KSU_MANUAL_HOOK\
-\t{ int __fd = AT_FDCWD; int __flags = 0;\
-\tksu_handle_execveat(&__fd, &filename, &argv, &envp, &__flags); }\
-#endif
-            }' fs/exec.c
-            grep -q "ksu_handle_execveat" fs/exec.c && echo "  ✅ Alternative patch applied" || { echo "  ❌ FATAL: fs/exec.c hook failed!"; exit 1; }
-          fi
-
-          # ────────────────────────────────────────────────────────────────
-          # [2/6] fs/open.c — Hook do_faccessat
-          # ────────────────────────────────────────────────────────────────
-          echo "[2/6] Patching fs/open.c ..."
-
-          # Add extern declaration
-          sed -i '/^long do_faccessat(int dfd/i\
-#ifdef CONFIG_KSU_MANUAL_HOOK\
-extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,\
-\t\t\t\tint *mode, int *flags);\
-#endif' fs/open.c
-
-          # Insert hook call at the start of do_faccessat
-          sed -i '/^long do_faccessat(int dfd, const char __user \*filename, int mode)/,/^{/{
-            /^{/a\
-#ifdef CONFIG_KSU_MANUAL_HOOK\
-\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\
-#endif
-          }' fs/open.c
-
-          # Verify
-          if grep -q "ksu_handle_faccessat" fs/open.c; then
-            echo "  ✅ fs/open.c patched successfully"
-          else
-            echo "  ⚠️ fs/open.c — trying SYSCALL_DEFINE3 fallback..."
-            sed -i '/SYSCALL_DEFINE3(faccessat/,/^{/{
-              /^{/a\
-#ifdef CONFIG_KSU_MANUAL_HOOK\
-\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\
-#endif
-            }' fs/open.c
-            grep -q "ksu_handle_faccessat" fs/open.c && echo "  ✅ Fallback applied" || echo "  ⚠️ fs/open.c may need manual patching"
-          fi
-
-          # ────────────────────────────────────────────────────────────────
-          # [3/6] fs/read_write.c — Hook vfs_read
-          # ────────────────────────────────────────────────────────────────
-          echo "[3/6] Patching fs/read_write.c ..."
-
-          # Add extern declaration
-          sed -i '/^ssize_t vfs_read(struct file \*file/i\
-#ifdef CONFIG_KSU_MANUAL_HOOK\
-extern int ksu_handle_vfs_read(struct file **file_ptr,\
-\t\t\t\tchar __user **buf_ptr, size_t *count_ptr, loff_t **pos);\
-#endif' fs/read_write.c
-
-          # Insert hook call at the start of vfs_read
-          sed -i '/^ssize_t vfs_read(struct file \*file/,/^{/{
-            /^{/a\
-#ifdef CONFIG_KSU_MANUAL_HOOK\
-\tksu_handle_vfs_read(&file, &buf, &count, &pos);\
-#endif
-          }' fs/read_write.c
-
-          # Verify
-          if grep -q "ksu_handle_vfs_read" fs/read_write.c; then
-            echo "  ✅ fs/read_write.c patched successfully"
-          else
-            echo "  ⚠️ fs/read_write.c may need manual patching"
-          fi
-
-          # ────────────────────────────────────────────────────────────────
-          # [4/6] fs/stat.c — Hook newfstatat (SYSCALL_DEFINE4)
-          # ────────────────────────────────────────────────────────────────
-          echo "[4/6] Patching fs/stat.c ..."
-
-          # Add extern declarations after includes
-          sed -i '/#include <linux\/syscalls.h>/a\
-#ifdef CONFIG_KSU_MANUAL_HOOK\
-extern int ksu_handle_stat(int *dfd, const char __user **filename_user,\
-\t\t\t\tint *flags);\
-#endif' fs/stat.c
-
-          # Hook newfstatat: SYSCALL_DEFINE4(newfstatat, ...)
-          sed -i '/SYSCALL_DEFINE4(newfstatat/,/struct kstat stat;/{
-            /struct kstat stat;/a\
-#ifdef CONFIG_KSU_MANUAL_HOOK\
-\tksu_handle_stat(&dfd, &filename, &flag);\
-#endif
-          }' fs/stat.c
-
-          # Verify
-          if grep -q "ksu_handle_stat" fs/stat.c; then
-            echo "  ✅ fs/stat.c patched successfully"
-          else
-            echo "  ⚠️ fs/stat.c — trying vfs_statx fallback..."
-            sed -i '/int vfs_statx(int dfd/,/^{/{
-              /^{/a\
-#ifdef CONFIG_KSU_MANUAL_HOOK\
-\tksu_handle_stat(&dfd, &filename, &flags);\
-#endif
-            }' fs/stat.c
-            grep -q "ksu_handle_stat" fs/stat.c && echo "  ✅ Fallback applied" || echo "  ⚠️ fs/stat.c may need manual patching"
-          fi
-
-          # ────────────────────────────────────────────────────────────────
-          # [5/6] drivers/input/input.c — Safe mode volume key trigger
-          # ────────────────────────────────────────────────────────────────
-          echo "[5/6] Patching drivers/input/input.c ..."
-
-          # Add extern declaration
-          sed -i '/#include <linux\/input.h>/a\
-#ifdef CONFIG_KSU_MANUAL_HOOK\
-extern void ksu_handle_input_handle_event(unsigned int *type,\
-\t\t\t\tunsigned int *code, int *value);\
-#endif' drivers/input/input.c
-
-          # Hook input_handle_event
-          sed -i '/static void input_handle_event/,/^{/{
-            /^{/a\
-#ifdef CONFIG_KSU_MANUAL_HOOK\
-\tksu_handle_input_handle_event(&type, &code, &value);\
-#endif
-          }' drivers/input/input.c
-
-          # Verify
-          if grep -q "ksu_handle_input_handle_event" drivers/input/input.c; then
-            echo "  ✅ drivers/input/input.c patched successfully"
-          else
-            echo "  ⚠️ drivers/input/input.c may need manual patching"
-          fi
-
-          # ────────────────────────────────────────────────────────────────
-          # [6/6] kernel/reboot.c — Optional: reboot hook
-          # ────────────────────────────────────────────────────────────────
-          echo "[6/6] Patching kernel/reboot.c (optional) ..."
-
-          if [ -f "kernel/reboot.c" ]; then
-            sed -i '/#include <linux\/reboot.h>/a\
-#ifdef CONFIG_KSU_MANUAL_HOOK\
-extern void ksu_handle_reboot(void);\
-#endif' kernel/reboot.c
-
-            sed -i '/SYSCALL_DEFINE4(__reboot/,/^{/{
-              /^{/a\
-#ifdef CONFIG_KSU_MANUAL_HOOK\
-\tksu_handle_reboot();\
-#endif
+            #ifdef CONFIG_KSU_MANUAL_HOOK\
+            extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,\
+            \t\t\t\tvoid *argv, void *envp, int *flags);\
+            #endif' fs/exec.c
+            
+                      # Insert hook call inside do_execveat_common (kernel 5.4)
+                      sed -i '/static int do_execveat_common(int fd, struct filename \*filename,/,/retval = count(argv, MAX_ARG_STRINGS);/{
+                        /retval = count(argv, MAX_ARG_STRINGS);/i\
+            #ifdef CONFIG_KSU_MANUAL_HOOK\
+            \tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\
+            #endif
+                      }' fs/exec.c
+            
+                      # Verify
+                      if grep -q "ksu_handle_execveat" fs/exec.c; then
+                        echo "  ✅ fs/exec.c patched successfully"
+                      else
+                        echo "  ❌ fs/exec.c — trying alternative (patch do_execve directly)..."
+                        sed -i '/^int do_execve(/,/^{/{
+                          /^{/a\
+            #ifdef CONFIG_KSU_MANUAL_HOOK\
+            \t{ int __fd = AT_FDCWD; int __flags = 0;\
+            \tksu_handle_execveat(&__fd, &filename, &argv, &envp, &__flags); }\
+            #endif
+                        }' fs/exec.c
+                        grep -q "ksu_handle_execveat" fs/exec.c && echo "  ✅ Alternative patch applied" || { echo "  ❌ FATAL: fs/exec.c hook failed!"; exit 1; }
+                      fi
+            
+                      # ────────────────────────────────────────────────────────────────
+                      # [2/6] fs/open.c — Hook do_faccessat
+                      # ────────────────────────────────────────────────────────────────
+                      echo "[2/6] Patching fs/open.c ..."
+            
+                      # Add extern declaration
+                      sed -i '/^long do_faccessat(int dfd/i\
+            #ifdef CONFIG_KSU_MANUAL_HOOK\
+            extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,\
+            \t\t\t\tint *mode, int *flags);\
+            #endif' fs/open.c
+            
+                      # Insert hook call at the start of do_faccessat
+                      sed -i '/^long do_faccessat(int dfd, const char __user \*filename, int mode)/,/^{/{
+                        /^{/a\
+            #ifdef CONFIG_KSU_MANUAL_HOOK\
+            \tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\
+            #endif
+                      }' fs/open.c
+            
+                      # Verify
+                      if grep -q "ksu_handle_faccessat" fs/open.c; then
+                        echo "  ✅ fs/open.c patched successfully"
+                      else
+                        echo "  ⚠️ fs/open.c — trying SYSCALL_DEFINE3 fallback..."
+                        sed -i '/SYSCALL_DEFINE3(faccessat/,/^{/{
+                          /^{/a\
+            #ifdef CONFIG_KSU_MANUAL_HOOK\
+            \tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\
+            #endif
+                        }' fs/open.c
+                        grep -q "ksu_handle_faccessat" fs/open.c && echo "  ✅ Fallback applied" || echo "  ⚠️ fs/open.c may need manual patching"
+                      fi
+            
+                      # ────────────────────────────────────────────────────────────────
+                      # [3/6] fs/read_write.c — Hook vfs_read
+                      # ────────────────────────────────────────────────────────────────
+                      echo "[3/6] Patching fs/read_write.c ..."
+            
+                      # Add extern declaration
+                      sed -i '/^ssize_t vfs_read(struct file \*file/i\
+            #ifdef CONFIG_KSU_MANUAL_HOOK\
+            extern int ksu_handle_vfs_read(struct file **file_ptr,\
+            \t\t\t\tchar __user **buf_ptr, size_t *count_ptr, loff_t **pos);\
+            #endif' fs/read_write.c
+            
+                      # Insert hook call at the start of vfs_read
+                      sed -i '/^ssize_t vfs_read(struct file \*file/,/^{/{
+                        /^{/a\
+            #ifdef CONFIG_KSU_MANUAL_HOOK\
+            \tksu_handle_vfs_read(&file, &buf, &count, &pos);\
+            #endif
+                      }' fs/read_write.c
+            
+                      # Verify
+                      if grep -q "ksu_handle_vfs_read" fs/read_write.c; then
+                        echo "  ✅ fs/read_write.c patched successfully"
+                      else
+                        echo "  ⚠️ fs/read_write.c may need manual patching"
+                      fi
+            
+                      # ────────────────────────────────────────────────────────────────
+                      # [4/6] fs/stat.c — Hook newfstatat (SYSCALL_DEFINE4)
+                      # ────────────────────────────────────────────────────────────────
+                      echo "[4/6] Patching fs/stat.c ..."
+            
+                      # Add extern declarations after includes
+                      sed -i '/#include <linux\/syscalls.h>/a\
+            #ifdef CONFIG_KSU_MANUAL_HOOK\
+            extern int ksu_handle_stat(int *dfd, const char __user **filename_user,\
+            \t\t\t\tint *flags);\
+            #endif' fs/stat.c
+            
+                      # Hook newfstatat: SYSCALL_DEFINE4(newfstatat, ...)
+                      sed -i '/SYSCALL_DEFINE4(newfstatat/,/struct kstat stat;/{
+                        /struct kstat stat;/a\
+            #ifdef CONFIG_KSU_MANUAL_HOOK\
+            \tksu_handle_stat(&dfd, &filename, &flag);\
+            #endif
+                      }' fs/stat.c
+            
+                      # Verify
+                      if grep -q "ksu_handle_stat" fs/stat.c; then
+                        echo "  ✅ fs/stat.c patched successfully"
+                      else
+                        echo "  ⚠️ fs/stat.c — trying vfs_statx fallback..."
+                        sed -i '/int vfs_statx(int dfd/,/^{/{
+                          /^{/a\
+            #ifdef CONFIG_KSU_MANUAL_HOOK\
+            \tksu_handle_stat(&dfd, &filename, &flags);\
+            #endif
+                        }' fs/stat.c
+                        grep -q "ksu_handle_stat" fs/stat.c && echo "  ✅ Fallback applied" || echo "  ⚠️ fs/stat.c may need manual patching"
+                      fi
+            
+                      # ────────────────────────────────────────────────────────────────
+                      # [5/6] drivers/input/input.c — Safe mode volume key trigger
+                      # ────────────────────────────────────────────────────────────────
+                      echo "[5/6] Patching drivers/input/input.c ..."
+            
+                      # Add extern declaration
+                      sed -i '/#include <linux\/input.h>/a\
+            #ifdef CONFIG_KSU_MANUAL_HOOK\
+            extern void ksu_handle_input_handle_event(unsigned int *type,\
+            \t\t\t\tunsigned int *code, int *value);\
+            #endif' drivers/input/input.c
+            
+                      # Hook input_handle_event
+                      sed -i '/static void input_handle_event/,/^{/{
+                        /^{/a\
+            #ifdef CONFIG_KSU_MANUAL_HOOK\
+            \tksu_handle_input_handle_event(&type, &code, &value);\
+            #endif
+                      }' drivers/input/input.c
+            
+                      # Verify
+                      if grep -q "ksu_handle_input_handle_event" drivers/input/input.c; then
+                        echo "  ✅ drivers/input/input.c patched successfully"
+                      else
+                        echo "  ⚠️ drivers/input/input.c may need manual patching"
+                      fi
+            
+                      # ────────────────────────────────────────────────────────────────
+                      # [6/6] kernel/reboot.c — Optional: reboot hook
+                      # ────────────────────────────────────────────────────────────────
+                      echo "[6/6] Patching kernel/reboot.c (optional) ..."
+            
+                      if [ -f "kernel/reboot.c" ]; then
+                        sed -i '/#include <linux\/reboot.h>/a\
+            #ifdef CONFIG_KSU_MANUAL_HOOK\
+            extern void ksu_handle_reboot(void);\
+            #endif' kernel/reboot.c
+            
+                        sed -i '/SYSCALL_DEFINE4(__reboot/,/^{/{
+                          /^{/a\
+            #ifdef CONFIG_KSU_MANUAL_HOOK\
+            \tksu_handle_reboot();\
+            #endif
             }' kernel/reboot.c
 
             if grep -q "ksu_handle_reboot" kernel/reboot.c; then
@@ -638,37 +638,37 @@ extern void ksu_handle_reboot(void);\
 
           # Configure anykernel.sh for lisa (Snapdragon 778G / SM7325)
           cat > anykernel.sh << 'ANYKERNEL_EOF'
-# AnyKernel3 Ramdisk Mod Script
-# osm0sis @ xda-developers
-# SukiSU-Ultra for Xiaomi 11 Lite NE 5G (lisa) — Kernel 5.4
-
-properties() { '
-kernel.string=SukiSU-Ultra Kernel for Lisa (5.4 QGKI)
-do.devicecheck=1
-do.modules=0
-do.systemless=1
-do.cleanup=1
-do.cleanuponabort=0
-device.name1=lisa
-device.name2=lisain
-device.name3=lisa_global
-supported.versions=
-supported.patchlevels=
-'; }
-
-# Shell variables
-block=/dev/block/bootdevice/by-name/boot;
-is_slot_device=auto;
-ramdisk_compression=auto;
-patch_vbmeta_flag=auto;
-
-. tools/ak3-core.sh;
-
-set_perm_recursive 0 0 755 644 $ramdisk/*;
-
-dump_boot;
-write_boot;
-ANYKERNEL_EOF
+          # AnyKernel3 Ramdisk Mod Script
+          # osm0sis @ xda-developers
+          # SukiSU-Ultra for Xiaomi 11 Lite NE 5G (lisa) — Kernel 5.4
+          
+          properties() { '
+          kernel.string=SukiSU-Ultra Kernel for Lisa (5.4 QGKI)
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=1
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=lisa
+          device.name2=lisain
+          device.name3=lisa_global
+          supported.versions=
+          supported.patchlevels=
+          '; }
+          
+          # Shell variables
+          block=/dev/block/bootdevice/by-name/boot;
+          is_slot_device=auto;
+          ramdisk_compression=auto;
+          patch_vbmeta_flag=auto;
+          
+          . tools/ak3-core.sh;
+          
+          set_perm_recursive 0 0 755 644 $ramdisk/*;
+          
+          dump_boot;
+          write_boot;
+          ANYKERNEL_EOF
 
           # Copy kernel image (prefer Image.gz for 5.4 QGKI)
           cd ..
