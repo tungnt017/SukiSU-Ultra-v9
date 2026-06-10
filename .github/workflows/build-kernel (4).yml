@@ -1,0 +1,668 @@
+name: "🔨 Build SukiSU-Ultra Kernel (lisa) v11"
+
+on:
+  workflow_dispatch:
+    inputs:
+      sukisu_branch:
+        description: "🌿 SukiSU-Ultra branch"
+        required: true
+        default: "main"
+        type: choice
+        options:
+          - main
+          - susfs-main
+          - susfs-test
+      apply_optional_patches:
+        description: "🔧 Apply optional patches (Safe Mode input.c hook)"
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      clang_version:
+        description: "⚙️ Clang toolchain"
+        required: true
+        default: "proton"
+        type: choice
+        options:
+          - proton
+          - zyc
+
+env:
+  KERNEL_REPO: https://github.com/PixelExperience-Devices/kernel_xiaomi_lisa
+  KERNEL_BRANCH: thirteen
+  DEVICE: lisa
+  ARCH: arm64
+  WORK_DIR: ${{ github.workspace }}
+
+jobs:
+  build:
+    name: "🔨 Build kernel for lisa"
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      # ── 1. Checkout ──────────────────────────────────────────
+      - name: "📥 Step 1: Checkout workflow repo"
+        uses: actions/checkout@v4
+
+      # ── 2. Install dependencies ──────────────────────────────
+      - name: "📦 Step 2: Install build dependencies"
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc bison flex libssl-dev libelf-dev \
+            git curl wget zip unzip python3 python-is-python3 \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            ca-certificates lz4 xz-utils cpio file
+          echo "✅ Dependencies installed"
+
+      # ── 3. Clone kernel source ──────────────────────────────
+      - name: "🐧 Step 3: Clone kernel source"
+        run: |
+          cd $WORK_DIR
+          echo "📥 Cloning $KERNEL_REPO branch $KERNEL_BRANCH..."
+          git clone --depth=1 --branch=$KERNEL_BRANCH $KERNEL_REPO kernel_source
+          cd kernel_source
+          echo "✅ Kernel source cloned"
+          echo "   Commit: $(git log --oneline -1)"
+
+      # ── 4. Setup SukiSU-Ultra (BUILTIN mode) ───────────────
+      - name: "🔧 Step 4: Setup SukiSU-Ultra (builtin)"
+        run: |
+          cd $WORK_DIR/kernel_source
+
+          BRANCH="${{ github.event.inputs.sukisu_branch }}"
+          echo "📥 Setting up SukiSU-Ultra from branch: $BRANCH"
+          echo "   Mode: BUILTIN (compiled into kernel, for non-GKI manual hook)"
+          echo ""
+
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/${BRANCH}/kernel/setup.sh" | bash -s builtin
+
+          echo ""
+          if [ -d "drivers/kernelsu" ] || [ -d "KernelSU" ]; then
+            echo "✅ SukiSU-Ultra integrated successfully (builtin mode)"
+            grep -r "KERNEL_SU_VERSION" drivers/kernelsu/ KernelSU/ 2>/dev/null | head -3 || true
+          else
+            echo "❌ SukiSU-Ultra integration failed!"
+            exit 1
+          fi
+
+      # ── 5. Create SUSFS stub headers ────────────────────────
+      - name: "📄 Step 5: Create SUSFS stub headers"
+        run: |
+          cd $WORK_DIR/kernel_source
+
+          echo "📄 Creating SUSFS stub headers..."
+
+          if [ ! -f include/linux/susfs.h ]; then
+            cat > include/linux/susfs.h << 'STUB1'
+          #ifndef _LINUX_SUSFS_H
+          #define _LINUX_SUSFS_H
+          #include <linux/types.h>
+          #endif
+          STUB1
+            echo "  ✅ Created include/linux/susfs.h (stub)"
+          else
+            echo "  ℹ️ include/linux/susfs.h already exists"
+          fi
+
+          if [ ! -f include/linux/susfs_def.h ]; then
+            cat > include/linux/susfs_def.h << 'STUB2'
+          #ifndef _LINUX_SUSFS_DEF_H
+          #define _LINUX_SUSFS_DEF_H
+          #endif
+          STUB2
+            echo "  ✅ Created include/linux/susfs_def.h (stub)"
+          else
+            echo "  ℹ️ include/linux/susfs_def.h already exists"
+          fi
+
+          if [ ! -f include/linux/susfs_redirect.h ]; then
+            cat > include/linux/susfs_redirect.h << 'STUB3'
+          #ifndef _LINUX_SUSFS_REDIRECT_H
+          #define _LINUX_SUSFS_REDIRECT_H
+          #endif
+          STUB3
+            echo "  ✅ Created include/linux/susfs_redirect.h (stub)"
+          else
+            echo "  ℹ️ include/linux/susfs_redirect.h already exists"
+          fi
+
+      # ── 6. Apply manual hooks ───────────────────────────────
+      - name: "🔩 Step 6: Apply manual hooks"
+        run: |
+          cd $WORK_DIR/kernel_source
+          chmod +x $WORK_DIR/scripts/apply-hooks.sh
+
+          if [ "${{ github.event.inputs.apply_optional_patches }}" = "true" ]; then
+            bash $WORK_DIR/scripts/apply-hooks.sh --optional
+          else
+            bash $WORK_DIR/scripts/apply-hooks.sh
+          fi
+
+      # ── 7. Clang & source compatibility patches ────────────
+      - name: "🩹 Step 7: Clang & source compatibility patches"
+        run: |
+          cd $WORK_DIR/kernel_source
+
+          echo "🩹 Applying compatibility patches..."
+
+          # Fix 1: typecheck.h — uninitialized __dummy2
+          if [ -f include/linux/typecheck.h ]; then
+            if grep -q 'typeof(x) __dummy2;' include/linux/typecheck.h; then
+              sed -i 's/typeof(x) __dummy2;/typeof(x) __dummy2 = (typeof(x))0;/' include/linux/typecheck.h
+              echo "  ✅ Fix 1: typecheck.h (__dummy2 initialized)"
+            else
+              echo "  ℹ️ Fix 1: typecheck.h already patched"
+            fi
+          fi
+
+          # Fix 2: sde_hw_dsc_1_2.c — missing return type
+          DSC_FILE="techpack/display/msm/sde/sde_hw_dsc_1_2.c"
+          if [ -f "$DSC_FILE" ]; then
+            if grep -q 'static inline _dsc_subblk_offset' "$DSC_FILE"; then
+              sed -i 's/static inline _dsc_subblk_offset/static inline int _dsc_subblk_offset/' "$DSC_FILE"
+              echo "  ✅ Fix 2: sde_hw_dsc_1_2.c (added int return type)"
+            else
+              echo "  ℹ️ Fix 2: sde_hw_dsc_1_2.c already patched"
+            fi
+          fi
+
+          # Fix 3: SukiSU-Ultra sulog/event.c — USER_ARG_NULL type mismatch
+          SULOG_FILE="drivers/kernelsu/sulog/event.c"
+          if [ ! -f "$SULOG_FILE" ]; then
+            SULOG_FILE=$(find drivers/ -path "*/sulog/event.c" -type f 2>/dev/null | head -1)
+          fi
+          if [ -n "$SULOG_FILE" ] && [ -f "$SULOG_FILE" ]; then
+            echo "  📍 Found sulog: $SULOG_FILE"
+            if grep -q 'define USER_ARG_NULL.*user_arg_null_ptr()' "$SULOG_FILE"; then
+              sed -i 's/#define USER_ARG_NULL user_arg_null_ptr()/#define USER_ARG_NULL (*user_arg_null_ptr())/' "$SULOG_FILE"
+              echo "  ✅ Fix 3: sulog/event.c (USER_ARG_NULL dereferenced)"
+            elif grep -q 'USER_ARG_NULL' "$SULOG_FILE"; then
+              sed -i 's/user_arg_null_ptr()/(*user_arg_null_ptr())/' "$SULOG_FILE"
+              echo "  ✅ Fix 3: Broad fix applied to sulog/event.c"
+            else
+              echo "  ℹ️ Fix 3: USER_ARG_NULL not found in sulog/event.c"
+            fi
+          else
+            echo "  ℹ️ Fix 3: sulog/event.c not found"
+          fi
+
+          # ══════════════════════════════════════════════════════════════
+          # Fix 4: Stub for missing SELinux hiding symbols
+          #
+          # When SUSFS is disabled, SukiSU-Ultra code still calls:
+          #   ksu_selinux_hide_handle_second_stage()
+          #   ksu_selinux_hide_handle_post_fs_data()
+          # These are defined in susfs code which is not compiled.
+          # Create empty stub implementations so the linker is happy.
+          # ══════════════════════════════════════════════════════════════
+          echo ""
+          echo "  🔗 Fix 4: Creating SELinux hiding stubs..."
+
+          STUB_DIR="drivers/kernelsu"
+          if [ ! -d "$STUB_DIR" ]; then
+            STUB_DIR=$(find drivers/ -type d -name "kernelsu" | head -1)
+          fi
+
+          if [ -z "$STUB_DIR" ] || [ ! -d "$STUB_DIR" ]; then
+            echo "  ❌ Fix 4: drivers/kernelsu directory not found!"
+          else
+            echo "  📍 KernelSU dir: $STUB_DIR"
+
+            # Create the stub C file
+            cat > "$STUB_DIR/selinux_hide_stub.c" << 'SELINUX_STUB'
+          /*
+           * selinux_hide_stub.c
+           *
+           * Stub implementations for SELinux hiding functions.
+           * When SUSFS (CONFIG_KSU_SUSFS) is disabled, these symbols are still
+           * referenced by SukiSU-Ultra core code but have no definition.
+           * This file provides empty implementations to satisfy the linker.
+           */
+          #include <linux/types.h>
+          #include <linux/printk.h>
+
+          void ksu_selinux_hide_handle_second_stage(void)
+          {
+              /* SUSFS disabled — SELinux hiding is a no-op */
+          }
+
+          void ksu_selinux_hide_handle_post_fs_data(void)
+          {
+              /* SUSFS disabled — SELinux hiding is a no-op */
+          }
+          SELINUX_STUB
+            echo "  ✅ Created $STUB_DIR/selinux_hide_stub.c"
+
+            # Add to build system (try Makefile first, then Kbuild)
+            ADDED_TO_BUILD=false
+
+            for BUILD_FILE in "$STUB_DIR/Makefile" "$STUB_DIR/Kbuild"; do
+              if [ -f "$BUILD_FILE" ]; then
+                if ! grep -q "selinux_hide_stub" "$BUILD_FILE"; then
+                  # Find existing obj-y or obj-$(CONFIG_KSU) line and append after it
+                  if grep -q 'obj-.*+=' "$BUILD_FILE"; then
+                    echo "" >> "$BUILD_FILE"
+                    echo "# Stub for SELinux hiding when SUSFS is disabled" >> "$BUILD_FILE"
+                    echo 'obj-y += selinux_hide_stub.o' >> "$BUILD_FILE"
+                  else
+                    echo 'obj-y += selinux_hide_stub.o' >> "$BUILD_FILE"
+                  fi
+                  echo "  ✅ Added selinux_hide_stub.o to $(basename $BUILD_FILE)"
+                  ADDED_TO_BUILD=true
+                  break
+                else
+                  echo "  ℹ️ selinux_hide_stub already in $(basename $BUILD_FILE)"
+                  ADDED_TO_BUILD=true
+                  break
+                fi
+              fi
+            done
+
+            if [ "$ADDED_TO_BUILD" = false ]; then
+              echo "  ⚠️ No Makefile/Kbuild found in $STUB_DIR"
+              echo "  📋 Directory contents:"
+              ls -la "$STUB_DIR/"
+              # Last resort: create a minimal Makefile entry
+              echo 'obj-y += selinux_hide_stub.o' >> "$STUB_DIR/Makefile"
+              echo "  ✅ Created Makefile with selinux_hide_stub.o"
+            fi
+
+            # Also check if there are subdirectories with their own build files
+            for SUBDIR in "$STUB_DIR"/*/; do
+              if [ -d "$SUBDIR" ]; then
+                for SF in "$SUBDIR/Makefile" "$SUBDIR/Kbuild"; do
+                  if [ -f "$SF" ] && grep -q "selinux_hide" "$SF" 2>/dev/null; then
+                    echo "  ℹ️ Found selinux reference in $SF"
+                  fi
+                done
+              fi
+            done
+          fi
+
+          echo ""
+          echo "✅ All compatibility patches done (4 fixes)"
+
+
+      # ── Convert safe modules to built-in ────────────────────
+      - name: "🔧 Convert modules to built-in (=m → =y, keep WLAN/IPA/USB as =m)"
+        run: |
+          set -euo pipefail
+          cd $WORK_DIR/kernel_source
+
+          DEFCONFIG=""
+          for dc in \
+            "arch/$ARCH/configs/vendor/lahaina-qgki_defconfig" \
+            "arch/$ARCH/configs/lisa_defconfig" \
+            "arch/$ARCH/configs/vendor/lisa_defconfig" \
+            "arch/$ARCH/configs/vendor/lisa-perf_defconfig"; do
+            if [ -f "$dc" ]; then DEFCONFIG="$dc"; break; fi
+          done
+          [ -z "$DEFCONFIG" ] && DEFCONFIG=$(find arch/$ARCH/configs -name "*lisa*" -type f | head -1)
+          [ -z "$DEFCONFIG" ] && { echo "❌ Cannot find defconfig"; exit 1; }
+
+          echo "📋 Defconfig: $DEFCONFIG"
+          grep "=m$" "$DEFCONFIG" | sort > /tmp/original_modules.txt
+          BEFORE=$(wc -l < /tmp/original_modules.txt)
+          echo "📊 Before: $BEFORE modules (=m)"
+
+          # Step 1: Convert ALL =m to =y
+          sed -i 's/=m$/=y/' "$DEFCONFIG"
+
+          # Step 2: Restore modules that MUST stay =m (linker conflicts)
+          KEEP_AS_MODULE=(
+            "CONFIG_QCA_CLD_WLAN"
+            "CONFIG_CNSS2"
+            "CONFIG_CNSS_QCA6390"
+            "CONFIG_CNSS_GENL"
+            "CONFIG_WCNSS_MEM_PRE_ALLOC"
+            "CONFIG_BUS_AUTO_SUSPEND"
+            "CONFIG_IPA3"
+            "CONFIG_GSI"
+            "CONFIG_IPA_FMWK"
+            "CONFIG_RMNET_IPA3"
+            "CONFIG_IPA_WDI_UNIFIED_API"
+            "CONFIG_RNDIS_IPA"
+            "CONFIG_USB_F_GSI"
+            "CONFIG_USB_CONFIGFS_F_GSI"
+            "CONFIG_USB_F_QDSS"
+          )
+
+          for cfg in "${KEEP_AS_MODULE[@]}"; do
+            if grep -q "^${cfg}=y" "$DEFCONFIG"; then
+              sed -i "s/^${cfg}=y/${cfg}=m/" "$DEFCONFIG"
+              echo "  🔄 ${cfg}=y → =m (keep as module)"
+            fi
+          done
+
+          # Catch-all: restore any WLAN/IPA/USB function originally =m
+          while IFS= read -r line; do
+            cfg_name=$(echo "$line" | cut -d= -f1)
+            case "$cfg_name" in
+              *WLAN*|*WIFI*|*CNSS*|*IPA*|*GSI*|*RMNET*|*USB_F_*|*USB_CONFIGFS*)
+                if grep -q "^${cfg_name}=y" "$DEFCONFIG"; then
+                  sed -i "s/^${cfg_name}=y/${cfg_name}=m/" "$DEFCONFIG"
+                  echo "  🔄 ${cfg_name}=y → =m (keep as module)"
+                fi
+                ;;
+            esac
+          done < /tmp/original_modules.txt
+
+          AFTER_M=$(grep -c "=m$" "$DEFCONFIG" || true)
+          AFTER_Y=$(grep -c "=y$" "$DEFCONFIG" || true)
+          CONVERTED=$((BEFORE - AFTER_M))
+          echo ""
+          echo "✅ Result: $CONVERTED modules → built-in, $AFTER_M kept as modules"
+          echo "📊 Final: $AFTER_M modules (=m), $AFTER_Y built-in (=y)"
+          echo ""
+          echo "📋 Modules kept as =m:"
+          grep "=m$" "$DEFCONFIG" | sort
+
+      # ── 8. Modify defconfig ─────────────────────────────────
+      - name: "⚙️ Step 8: Modify defconfig (KSU + disable SUSFS)"
+        run: |
+          cd $WORK_DIR/kernel_source
+
+          # Find defconfig
+          DEFCONFIG=""
+          for dc in \
+            "arch/$ARCH/configs/vendor/lahaina-qgki_defconfig" \
+            "arch/$ARCH/configs/lisa_defconfig" \
+            "arch/$ARCH/configs/vendor/lisa_defconfig" \
+            "arch/$ARCH/configs/vendor/lisa-perf_defconfig"; do
+            if [ -f "$dc" ]; then
+              DEFCONFIG="$dc"
+              break
+            fi
+          done
+
+          if [ -z "$DEFCONFIG" ]; then
+            DEFCONFIG=$(find arch/$ARCH/configs -name "*lisa*" -type f | head -1)
+          fi
+
+          if [ -z "$DEFCONFIG" ]; then
+            echo "❌ FATAL: Cannot find defconfig for lisa!"
+            ls arch/$ARCH/configs/
+            exit 1
+          fi
+
+          echo "📋 Using defconfig: $DEFCONFIG"
+          DEFCONFIG_NAME=$(basename "$DEFCONFIG")
+          echo ""
+
+          # ── Enable KSU (builtin) ──
+          echo "🔧 Enabling KSU (builtin mode)..."
+          sed -i '/CONFIG_KSU/d' "$DEFCONFIG"
+          echo "CONFIG_KSU=y" >> "$DEFCONFIG"
+          echo "CONFIG_KSU_MANUAL_HOOK=y" >> "$DEFCONFIG"
+
+          # ── Disable KPROBES ──
+          echo "🔧 Disabling KPROBES..."
+          sed -i '/CONFIG_KPROBES/d' "$DEFCONFIG"
+          echo "# CONFIG_KPROBES is not set" >> "$DEFCONFIG"
+
+          # ── Enable KALLSYMS ──
+          echo "🔧 Enabling KALLSYMS..."
+          sed -i '/CONFIG_KALLSYMS/d' "$DEFCONFIG"
+          echo "CONFIG_KALLSYMS=y" >> "$DEFCONFIG"
+          echo "CONFIG_KALLSYMS_ALL=y" >> "$DEFCONFIG"
+
+          # ══════════════════════════════════════════════════════
+          # ⚠️ DISABLE SUSFS — builtin enables it by default
+          # ══════════════════════════════════════════════════════
+          echo ""
+          echo "🚫 Disabling SUSFS (not fully integrated)..."
+          sed -i '/CONFIG_KSU_SUSFS/d' "$DEFCONFIG"
+          {
+            echo "# CONFIG_KSU_SUSFS is not set"
+            echo "# CONFIG_KSU_SUSFS_SUS_PATH is not set"
+            echo "# CONFIG_KSU_SUSFS_SUS_MOUNT is not set"
+            echo "# CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT is not set"
+            echo "# CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT is not set"
+            echo "# CONFIG_KSU_SUSFS_SUS_KSTAT is not set"
+            echo "# CONFIG_KSU_SUSFS_SUS_OVERLAYFS is not set"
+            echo "# CONFIG_KSU_SUSFS_TRY_UMOUNT is not set"
+            echo "# CONFIG_KSU_SUSFS_SPOOF_UNAME is not set"
+            echo "# CONFIG_KSU_SUSFS_ENABLE_LOG is not set"
+            echo "# CONFIG_KSU_SUSFS_OPEN_REDIRECT is not set"
+            echo "# CONFIG_KSU_SUSFS_SUS_SU is not set"
+          } >> "$DEFCONFIG"
+          echo "  ✅ All CONFIG_KSU_SUSFS* disabled in defconfig"
+
+          # ── Generate .config ──
+          echo ""
+          echo "📋 Running make ${DEFCONFIG_NAME}..."
+          make O=out ARCH=$ARCH $DEFCONFIG_NAME 2>&1 | tee $WORK_DIR/build_defconfig.log
+
+          # ── Post-defconfig: Force disable SUSFS in .config ──
+          echo ""
+          echo "🚫 Post-defconfig: Force disabling SUSFS in .config..."
+          if [ -f out/.config ]; then
+            sed -i 's/^CONFIG_KSU_SUSFS=y$/# CONFIG_KSU_SUSFS is not set/' out/.config
+            sed -i 's/^CONFIG_KSU_SUSFS_[A-Z_]*=y$/# & is not set/' out/.config
+            sed -i '/^CONFIG_KSU_SUSFS/s/=y/ is not set/' out/.config
+            sed -i '/^CONFIG_KSU_SUSFS/s/^CONFIG/# CONFIG/' out/.config
+
+            echo "  📋 Final KSU configs in .config:"
+            grep -E "CONFIG_KSU" out/.config || echo "  (no KSU configs found)"
+          fi
+
+          echo ""
+          echo "✅ Defconfig ready"
+
+      # ── 9. Setup toolchain ──────────────────────────────────
+      - name: "🔧 Step 9: Setup toolchain"
+        run: |
+          cd $WORK_DIR
+
+          CLANG_VER="${{ github.event.inputs.clang_version }}"
+
+          if [ "$CLANG_VER" = "proton" ]; then
+            echo "📥 Downloading Proton Clang..."
+            git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/clang
+          else
+            echo "📥 Downloading ZyCromerZ Clang..."
+            mkdir -p toolchain/clang
+            LATEST_URL=$(curl -s https://api.github.com/repos/ZyCromerZ/Clang/releases/latest \
+              | grep "browser_download_url.*tar.gz" | head -1 | cut -d'"' -f4)
+            if [ -n "$LATEST_URL" ]; then
+              wget -q "$LATEST_URL" -O clang.tar.gz
+              tar -xzf clang.tar.gz -C toolchain/clang/
+              rm clang.tar.gz
+            else
+              echo "⚠️ ZyC download failed, falling back to Proton..."
+              git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/clang
+            fi
+          fi
+
+          CLANG_BIN="$WORK_DIR/toolchain/clang/bin"
+          if [ -f "$CLANG_BIN/clang" ]; then
+            echo "✅ Toolchain ready"
+            "$CLANG_BIN/clang" --version | head -3
+          else
+            CLANG_BIN=$(dirname "$(find $WORK_DIR/toolchain -name "clang" -type f -executable | head -1)")
+            if [ -n "$CLANG_BIN" ]; then
+              echo "✅ Toolchain found at $CLANG_BIN"
+            else
+              echo "❌ FATAL: Cannot find clang!"
+              exit 1
+            fi
+          fi
+
+          echo "CLANG_BIN=$CLANG_BIN" >> $GITHUB_ENV
+
+      # ── 10. Build kernel ────────────────────────────────────
+      - name: "🔨 Step 10: Build kernel"
+        run: |
+          cd $WORK_DIR/kernel_source
+
+          CLANG_PATH="${{ env.CLANG_BIN }}"
+          export PATH="$CLANG_PATH:$PATH"
+
+          # 13 KCFLAGS
+          KCFLAGS_VAL="-Wno-default-const-init-var-unsafe"
+          KCFLAGS_VAL="$KCFLAGS_VAL -Wno-default-const-init-field-unsafe"
+          KCFLAGS_VAL="$KCFLAGS_VAL -Wno-sometimes-uninitialized"
+          KCFLAGS_VAL="$KCFLAGS_VAL -Wno-uninitialized"
+          KCFLAGS_VAL="$KCFLAGS_VAL -Wno-enum-conversion"
+          KCFLAGS_VAL="$KCFLAGS_VAL -Wno-enum-compare"
+          KCFLAGS_VAL="$KCFLAGS_VAL -Wno-implicit-function-declaration"
+          KCFLAGS_VAL="$KCFLAGS_VAL -Wno-implicit-int"
+          KCFLAGS_VAL="$KCFLAGS_VAL -Wno-int-conversion"
+          KCFLAGS_VAL="$KCFLAGS_VAL -Wno-unused-function"
+          KCFLAGS_VAL="$KCFLAGS_VAL -Wno-gnu-offsetof-extensions"
+          KCFLAGS_VAL="$KCFLAGS_VAL -Wno-single-bit-bitfield-constant-conversion"
+          KCFLAGS_VAL="$KCFLAGS_VAL -Wno-array-parameter"
+
+          echo "🔨 Building kernel..."
+          echo "   KCFLAGS: $KCFLAGS_VAL"
+          echo ""
+
+          MAKE_ARGS=(
+            O=out
+            ARCH=$ARCH
+            CC=clang
+            CLANG_TRIPLE=aarch64-linux-gnu-
+            CROSS_COMPILE=aarch64-linux-gnu-
+            LD=ld.lld
+            AR=llvm-ar
+            NM=llvm-nm
+            OBJCOPY=llvm-objcopy
+            OBJDUMP=llvm-objdump
+            STRIP=llvm-strip
+            "KCFLAGS=$KCFLAGS_VAL"
+          )
+
+          make "${MAKE_ARGS[@]}" -j$(nproc) 2>&1 | tee $WORK_DIR/build_kernel.log
+
+          if [ -f out/arch/$ARCH/boot/Image ]; then
+            echo ""
+            echo "════════════════════════════════════════════════════"
+            echo "✅ BUILD SUCCESS!"
+            echo "════════════════════════════════════════════════════"
+            ls -lh out/arch/$ARCH/boot/Image
+          elif [ -f out/arch/$ARCH/boot/Image.gz ]; then
+            echo "✅ BUILD SUCCESS (Image.gz)"
+            ls -lh out/arch/$ARCH/boot/Image.gz
+          else
+            echo ""
+            echo "════════════════════════════════════════════════════"
+            echo "❌ BUILD FAILED!"
+            echo "════════════════════════════════════════════════════"
+            tail -50 $WORK_DIR/build_kernel.log
+            exit 1
+          fi
+
+      # ── 11. Package AnyKernel3 ──────────────────────────────
+      - name: "📦 Step 11: Package AnyKernel3"
+        run: |
+          cd $WORK_DIR
+          TIMESTAMP=$(date +%Y%m%d-%H%M)
+
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
+          cd anykernel
+          rm -rf modules patch ramdisk LICENSE README.md
+
+          cat > anykernel.sh << 'AKSH'
+          # AnyKernel3 Ramdisk Mod Script
+          # osm0sis @ xda-developers
+
+          properties() { '
+          kernel.string=SukiSU-Ultra-ManualHook for Xiaomi 11 Lite NE 5G (lisa)
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=1
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=lisa
+          device.name2=lisain
+          device.name3=lisanin
+          supported.versions=
+          supported.patchlevels=
+          '; }
+
+          . tools/ak3-core.sh;
+
+          set_perm_recursive 0 0 755 644 $ramdisk/*;
+          dump_boot;
+          write_boot;
+          AKSH
+
+          # Copy kernel
+          for img in Image Image.gz; do
+            if [ -f $WORK_DIR/kernel_source/out/arch/$ARCH/boot/$img ]; then
+              cp $WORK_DIR/kernel_source/out/arch/$ARCH/boot/$img .
+              break
+            fi
+          done
+
+          # Copy DTB/DTBO
+          for dt in dtb dtbo.img; do
+            if [ -f $WORK_DIR/kernel_source/out/arch/$ARCH/boot/$dt ]; then
+              cp $WORK_DIR/kernel_source/out/arch/$ARCH/boot/$dt .
+            fi
+          done
+
+          ZIP_NAME="SukiSU-Ultra-ManualHook-lisa-${TIMESTAMP}.zip"
+          zip -r9 "$WORK_DIR/$ZIP_NAME" . -x ".git*"
+          echo "✅ AnyKernel3 package: $ZIP_NAME"
+          ls -lh "$WORK_DIR/$ZIP_NAME"
+          echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
+
+      # ── 12. Upload artifacts ────────────────────────────────
+      - name: "📤 Step 12: Upload kernel ZIP"
+        uses: actions/upload-artifact@v4
+        with:
+          name: "SukiSU-Ultra-ManualHook-${{ env.DEVICE }}"
+          path: ${{ env.WORK_DIR }}/${{ env.ZIP_NAME }}
+          retention-days: 30
+
+      - name: "📤 Step 12b: Upload kernel Image"
+        uses: actions/upload-artifact@v4
+        with:
+          name: "kernel-${{ env.DEVICE }}"
+          path: |
+            ${{ env.WORK_DIR }}/kernel_source/out/arch/${{ env.ARCH }}/boot/Image
+            ${{ env.WORK_DIR }}/kernel_source/out/arch/${{ env.ARCH }}/boot/Image.gz
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: "📤 Step 12c: Upload build logs"
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: "build-logs"
+          path: |
+            ${{ env.WORK_DIR }}/build_defconfig.log
+            ${{ env.WORK_DIR }}/build_kernel.log
+          retention-days: 7
+
+      # ── 13. Summary ─────────────────────────────────────────
+      - name: "📊 Step 13: Build Summary"
+        if: always()
+        run: |
+          echo ""
+          echo "╔══════════════════════════════════════════════════╗"
+          echo "║          BUILD SUMMARY — v11                     ║"
+          echo "╚══════════════════════════════════════════════════╝"
+          echo ""
+          echo "  Device:          $DEVICE"
+          echo "  SukiSU Branch:   ${{ github.event.inputs.sukisu_branch }}"
+          echo "  Setup Mode:      builtin (CONFIG_KSU=y)"
+          echo "  SUSFS:           DISABLED"
+          echo "  Manual Hook:     ENABLED"
+          echo "  KPROBES:         DISABLED"
+          echo "  Clang:           ${{ github.event.inputs.clang_version }}"
+          echo "  Optional hooks:  ${{ github.event.inputs.apply_optional_patches }}"
+          echo "  KCFLAGS:         13 suppression flags"
+          echo "  Source patches:  4 fixes"
+          echo ""
+          if [ -f "$WORK_DIR/$ZIP_NAME" ]; then
+            echo "  ✅ Output: $ZIP_NAME"
+            echo "     Size:   $(stat -c%s "$WORK_DIR/$ZIP_NAME" 2>/dev/null | numfmt --to=iec || echo 'N/A')"
+          else
+            echo "  ❌ Build failed — check logs"
+          fi
