@@ -335,7 +335,7 @@ jobs:
           echo "CONFIG_KALLSYMS=y" >> "$DEFCONFIG"
           echo "CONFIG_KALLSYMS_ALL=y" >> "$DEFCONFIG"
 
-          sed -i 's/=m$/=y/' "$DEFCONFIG_FILE"
+          sed -i 's/=m$/=y/' "$DEFCONFIG"
 
           # ══════════════════════════════════════════════════════
           # ⚠️ DISABLE SUSFS — builtin enables it by default
