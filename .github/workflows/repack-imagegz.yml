@@ -3,14 +3,9 @@ name: "📦 Repack compiled Image.gz → stock boot.img & stock AnyKernel3 ZIP"
 on:
   workflow_dispatch:
     inputs:
-      build_run_id:
-        description: "🔢 Kernel compile workflow Run ID"
+      kernel_zip_url:
+        description: "🔗 Direct URL to compiled kernel ZIP (contains Image.gz)"
         required: true
-        type: string
-      build_repo:
-        description: "📦 Repo with compiled kernel artifacts"
-        required: true
-        default: "tungnt017/SukiSU-Ultra-v9"
         type: string
       stock_boot_img_url:
         description: "🔗 Direct URL to stock boot.img"
@@ -32,18 +27,17 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: "📥 Step 1: Download compiled kernel artifact"
+      - name: "📥 Step 1: Download compiled kernel ZIP from URL"
         run: |
           set -euo pipefail
           mkdir -p work/artifacts && cd work
-          echo "📥 Downloading artifacts from run ${{ inputs.build_run_id }}..."
-          gh run download "${{ inputs.build_run_id }}" \
-            --repo "${{ inputs.build_repo }}" \
-            --dir ./artifacts/ 2>&1
-          echo "📋 Downloaded artifact files:"
+          echo "📥 Downloading kernel ZIP from URL..."
+          curl -fL --retry 3 --retry-delay 2 "${{ inputs.kernel_zip_url }}" -o kernel-artifact.zip
+          echo "📋 Downloaded: $(ls -lh kernel-artifact.zip)"
+          echo "📦 Extracting kernel ZIP..."
+          unzip -o kernel-artifact.zip -d ./artifacts/
+          echo "📋 Extracted artifact files:"
           find ./artifacts/ -type f | sort
-        env:
-          GH_TOKEN: ${{ github.token }}
 
       - name: "🔍 Step 2: Find compiled kernel image"
         run: |
@@ -57,7 +51,7 @@ jobs:
             done < <(find ./artifacts/ -type f -name "$pattern" 2>/dev/null)
           done
           if [ -z "$KERNEL_IMAGE" ]; then
-            echo "❌ No Image.gz, Image.gz-dtb, or Image found in compile artifacts"
+            echo "❌ No Image.gz, Image.gz-dtb, or Image found in kernel ZIP"
             find ./artifacts/ -type f | sort
             exit 1
           fi
@@ -248,7 +242,7 @@ jobs:
           echo "║  ✅ IMAGE.GZ → BOOT.IMG + AK3 ZIP DONE        ║"
           echo "╚════════════════════════════════════════════════════╝"
           echo ""
-          echo "  Source run:  ${{ inputs.build_run_id }}"
+          echo "  Source URL:  ${{ inputs.kernel_zip_url }}"
           echo "  Kernel:      ${{ env.KERNEL_BASENAME }}"
           echo "  AK3 target:  ${{ env.STOCK_KERNEL_TARGET }}"
           echo ""
