@@ -8,11 +8,11 @@ on:
         required: true
         default: "SukiSU-Ultra/SukiSU-Ultra"
       sukisu_ref:
-        description: "Branch / tag / commit để check"
+        description: "Branch / tag / commit"
         required: true
         default: "main"
       setup_mode:
-        description: "Tham số truyền vào setup.sh"
+        description: "Tham so truyen vao setup.sh"
         required: true
         default: "builtin"
         type: choice
@@ -20,11 +20,10 @@ on:
           - builtin
           - main
       min_susfs_refs:
-        description: "Số reference SUSFS tối thiểu trong code (sanity check)"
+        description: "So reference SUSFS toi thieu trong code"
         required: true
         default: "50"
   schedule:
-    # Chạy tự động mỗi ngày 02:00 UTC để phát hiện upstream đổi layout
     - cron: "0 2 * * *"
 
 permissions:
@@ -32,7 +31,7 @@ permissions:
 
 jobs:
   verify-susfs-builtin:
-    name: Verify SUSFS built-in (${{ github.event.inputs.setup_mode || 'builtin' }})
+    name: Verify SUSFS built-in
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -41,31 +40,29 @@ jobs:
       SUKISU_REF:  ${{ github.event.inputs.sukisu_ref  || 'main' }}
       SETUP_MODE:  ${{ github.event.inputs.setup_mode  || 'builtin' }}
       MIN_REFS:    ${{ github.event.inputs.min_susfs_refs || '50' }}
-      FAKE_KERNEL: ${{ github.workspace }}/fake-kernel
 
     steps:
       - name: Show inputs
         run: |
-          echo "Repo : $SUKISU_REPO"
-          echo "Ref  : $SUKISU_REF"
-          echo "Mode : $SETUP_MODE"
+          echo "Repo   : $SUKISU_REPO"
+          echo "Ref    : $SUKISU_REF"
+          echo "Mode   : $SETUP_MODE"
           echo "MinRefs: $MIN_REFS"
 
-      - name: Prepare a fake kernel tree
+      - name: Prepare fake kernel tree
         run: |
           set -euo pipefail
-          # setup.sh kỳ vọng được chạy trong root của kernel source.
-          # Mình tạo cây tối thiểu để setup.sh có chỗ "trồng" KernelSU/.
-          mkdir -p "$FAKE_KERNEL"
-          cd "$FAKE_KERNEL"
+          mkdir -p "$GITHUB_WORKSPACE/fake-kernel"
+          cd "$GITHUB_WORKSPACE/fake-kernel"
           git init -q
           mkdir -p drivers fs include/linux arch/arm64/configs
           touch Makefile Kconfig
           echo "fake-kernel-root" > .fake_kernel_marker
           git add -A
-          git -c user.email=ci@local -c user.name=ci commit -q -m "init fake kernel"
+          git -c user.email=ci@local -c user.name=ci commit -q -m "init"
+          echo "FAKE_KERNEL=$PWD" >> "$GITHUB_ENV"
 
-      - name: Fetch setup.sh from ${{ env.SUKISU_REPO }}@${{ env.SUKISU_REF }}
+      - name: Fetch setup.sh
         run: |
           set -euo pipefail
           URL="https://raw.githubusercontent.com/${SUKISU_REPO}/${SUKISU_REF}/kernel/setup.sh"
@@ -73,18 +70,16 @@ jobs:
           curl -fsSL -o "$FAKE_KERNEL/_setup.sh" "$URL"
           echo "----- setup.sh head -----"
           head -n 40 "$FAKE_KERNEL/_setup.sh"
-          echo "-------------------------"
 
-      - name: Run setup.sh ${{ env.SETUP_MODE }}
+      - name: Run setup.sh
         working-directory: ${{ env.FAKE_KERNEL }}
         run: |
           set -euo pipefail
           bash _setup.sh "$SETUP_MODE"
           echo "----- Resulting top-level entries -----"
           ls -la
-          echo "---------------------------------------"
 
-      - name: Locate KernelSU integration directory
+      - name: Locate KernelSU directory
         id: locate
         working-directory: ${{ env.FAKE_KERNEL }}
         run: |
@@ -94,131 +89,129 @@ jobs:
           elif [ -d "drivers/kernelsu" ]; then
             KSU_DIR="drivers/kernelsu"
           else
-            echo "::error::Không tìm thấy KernelSU/ hoặc drivers/kernelsu/ sau khi chạy setup.sh"
+            echo "::error::Khong tim thay KernelSU/ hoac drivers/kernelsu/"
             exit 1
           fi
           echo "KSU_DIR=$KSU_DIR" >> "$GITHUB_OUTPUT"
+          echo "KSU_DIR=$KSU_DIR" >> "$GITHUB_ENV"
           echo "Detected KSU_DIR=$KSU_DIR"
           ls -la "$KSU_DIR" | head -n 40
 
-      - name: "[1/3] Check SUSFS source files exist"
+      - name: Check 1/3 - SUSFS source files exist
         working-directory: ${{ env.FAKE_KERNEL }}
-        env:
-          KSU_DIR: ${{ steps.locate.outputs.KSU_DIR }}
         run: |
           set -euo pipefail
           FILES=$(find "$KSU_DIR" -maxdepth 5 \
                     \( -iname "susfs*.c" -o -iname "susfs*.h" -o -iname "*susfs_def*" \) \
                   | sort || true)
           if [ -z "$FILES" ]; then
-            echo "::error::[1/3] Không thấy file susfs*.{c,h} trong $KSU_DIR"
+            echo "::error::[1/3] Khong thay file susfs*.{c,h} trong $KSU_DIR"
             exit 1
           fi
-          echo "✅ SUSFS source files:"
+          echo "OK - SUSFS source files:"
           echo "$FILES"
 
-      - name: "[2/3] Check Kconfig exports CONFIG_KSU_SUSFS*"
+      - name: Check 2/3 - Kconfig exports SUSFS options
         working-directory: ${{ env.FAKE_KERNEL }}
-        env:
-          KSU_DIR: ${{ steps.locate.outputs.KSU_DIR }}
         run: |
           set -euo pipefail
           HITS=$(grep -RnE "^[[:space:]]*config[[:space:]]+KSU_SUSFS" "$KSU_DIR" || true)
           if [ -z "$HITS" ]; then
-            echo "::error::[2/3] Kconfig trong $KSU_DIR không định nghĩa CONFIG_KSU_SUSFS*"
+            echo "::error::[2/3] Kconfig khong dinh nghia KSU_SUSFS"
             exit 1
           fi
           TOTAL=$(printf '%s\n' "$HITS" | wc -l)
-          echo "✅ Kconfig defines $TOTAL SUSFS options:"
+          echo "OK - Kconfig defines $TOTAL SUSFS options"
           printf '%s\n' "$HITS" | head -n 30
 
-      - name: "[3/3] Check Makefile/Kbuild compiles susfs object"
+      - name: Check 3/3 - Build system compiles SUSFS object
         working-directory: ${{ env.FAKE_KERNEL }}
-        env:
-          KSU_DIR: ${{ steps.locate.outputs.KSU_DIR }}
         run: |
           set -euo pipefail
-          BUILD_FILES=$(ls "$KSU_DIR"/Makefile "$KSU_DIR"/Kbuild 2>/dev/null || true)
+          BUILD_FILES=""
+          [ -f "$KSU_DIR/Makefile" ] && BUILD_FILES="$BUILD_FILES $KSU_DIR/Makefile"
+          [ -f "$KSU_DIR/Kbuild" ]   && BUILD_FILES="$BUILD_FILES $KSU_DIR/Kbuild"
           if [ -z "$BUILD_FILES" ]; then
-            echo "::error::[3/3] Không thấy Makefile hoặc Kbuild trong $KSU_DIR"
+            echo "::error::[3/3] Khong thay Makefile/Kbuild trong $KSU_DIR"
             exit 1
           fi
           HITS=$(grep -nE "susfs(\.o|_)" $BUILD_FILES || true)
           if [ -z "$HITS" ]; then
-            echo "::error::[3/3] Makefile/Kbuild không build object susfs"
+            echo "::error::[3/3] Makefile/Kbuild khong build object susfs"
             exit 1
           fi
-          echo "✅ Build system includes SUSFS objects:"
+          echo "OK - Build system includes SUSFS:"
           echo "$HITS"
 
-      - name: Sanity: count SUSFS references in code
+      - name: Sanity - count SUSFS references
         working-directory: ${{ env.FAKE_KERNEL }}
-        env:
-          KSU_DIR: ${{ steps.locate.outputs.KSU_DIR }}
         run: |
           set -euo pipefail
           REF=$(grep -RnE "CONFIG_KSU_SUSFS|susfs_" "$KSU_DIR" \
                   --include="*.c" --include="*.h" 2>/dev/null | wc -l || echo 0)
-          echo "Total SUSFS references in code: $REF (min required: $MIN_REFS)"
+          echo "Total SUSFS references: $REF (min: $MIN_REFS)"
           if [ "$REF" -lt "$MIN_REFS" ]; then
-            echo "::error::Số reference SUSFS quá thấp ($REF < $MIN_REFS). Branch hiện tại có thể KHÔNG phải builtin."
+            echo "::error::So reference SUSFS qua thap ($REF < $MIN_REFS)"
             exit 1
           fi
-          echo "✅ Reference count OK."
+          echo "OK - Reference count: $REF"
 
-      - name: Generate verification report
+      - name: Generate report
         if: always()
         working-directory: ${{ env.FAKE_KERNEL }}
-        env:
-          KSU_DIR: ${{ steps.locate.outputs.KSU_DIR }}
         run: |
           set -euo pipefail
           REPORT="$GITHUB_WORKSPACE/susfs-verify-report.md"
+          FENCE='```'
+
           {
             echo "# SUSFS built-in verification report"
-            echo
-            echo "- Repo: \`$SUKISU_REPO\`"
-            echo "- Ref:  \`$SUKISU_REF\`"
-            echo "- Mode: \`$SETUP_MODE\`"
+            echo ""
+            echo "- Repo: $SUKISU_REPO"
+            echo "- Ref: $SUKISU_REF"
+            echo "- Mode: $SETUP_MODE"
             echo "- Date: $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
-            echo "- KSU_DIR: \`${KSU_DIR:-N/A}\`"
-            echo
-            echo "## SUSFS files found"
-            echo '```'
+            echo "- KSU_DIR: ${KSU_DIR:-N/A}"
+            echo ""
+            echo "## SUSFS files"
+            echo "$FENCE"
             find "${KSU_DIR:-.}" -maxdepth 5 \
-              \( -iname "susfs*.c" -o -iname "susfs*.h" -o -iname "*susfs_def*" \) 2>/dev/null | sort || true
-            echo '```'
-            echo
+              \( -iname "susfs*.c" -o -iname "susfs*.h" -o -iname "*susfs_def*" \) \
+              2>/dev/null | sort || true
+            echo "$FENCE"
+            echo ""
             echo "## Kconfig SUSFS options"
-            echo '```'
-            grep -RnE "^[[:space:]]*config[[:space:]]+KSU_SUSFS" "${KSU_DIR:-.}" 2>/dev/null | head -n 50 || true
-            echo '```'
-            echo
-            echo "## Makefile/Kbuild lines"
-            echo '```'
-            grep -nE "susfs" "${KSU_DIR:-.}"/Makefile "${KSU_DIR:-.}"/Kbuild 2>/dev/null || true
-            echo '```'
-            echo
-            echo "## Reference count"
+            echo "$FENCE"
+            grep -RnE "^[[:space:]]*config[[:space:]]+KSU_SUSFS" "${KSU_DIR:-.}" \
+              2>/dev/null | head -n 50 || true
+            echo "$FENCE"
+            echo ""
+            echo "## Makefile/Kbuild references"
+            echo "$FENCE"
+            grep -nE "susfs" "${KSU_DIR:-.}/Makefile" "${KSU_DIR:-.}/Kbuild" \
+              2>/dev/null || true
+            echo "$FENCE"
+            echo ""
             REF=$(grep -RnE "CONFIG_KSU_SUSFS|susfs_" "${KSU_DIR:-.}" \
                     --include="*.c" --include="*.h" 2>/dev/null | wc -l || echo 0)
-            echo "Total: **$REF** (min required: $MIN_REFS)"
+            echo "## Reference count"
+            echo "Total: $REF (min: $MIN_REFS)"
           } > "$REPORT"
-          echo "Report written to $REPORT"
+
+          echo "Report written: $REPORT"
           cat "$REPORT" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload verification report
+      - name: Upload report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: susfs-verify-report
-          path: |
-            susfs-verify-report.md
+          path: susfs-verify-report.md
           if-no-files-found: warn
           retention-days: 14
 
       - name: Final status
         if: success()
         run: |
-          echo "✅ '$SUKISU_REPO@$SUKISU_REF' với mode '$SETUP_MODE' ĐÃ tích hợp SUSFS đầy đủ."
-          echo "   => Workflow build kernel có thể an toàn KHÔNG clone ShirkNeko/susfs4ksu."
+          echo "PASS: $SUKISU_REPO @ $SUKISU_REF (mode=$SETUP_MODE) co SUSFS built-in."
+          echo "      => Workflow build kernel KHONG can clone ShirkNeko/susfs4ksu."
