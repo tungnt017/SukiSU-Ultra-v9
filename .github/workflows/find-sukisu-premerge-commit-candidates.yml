@@ -1,0 +1,323 @@
+name: Find SukiSU Non-GKI / Pre-Merge Commit Candidates
+
+on:
+  workflow_dispatch:
+    inputs:
+      sukisu_repo:
+        description: "Repository owner/name to inspect"
+        required: true
+        default: "SukiSU-Ultra/SukiSU-Ultra"
+      base_branch:
+        description: "Branch that currently contains merged history, usually builtin or main"
+        required: true
+        default: "builtin"
+      before_date:
+        description: "Find candidates before this date"
+        required: true
+        default: "2025-11-01 00:00:00 +0000"
+      after_date:
+        description: "Lower bound for commit search window"
+        required: false
+        default: "2025-01-01 00:00:00 +0000"
+      candidate_limit:
+        description: "Max candidates to write per report"
+        required: false
+        default: "80"
+      non_gki_branch_regex:
+        description: "Regex for possible non-GKI branch names"
+        required: false
+        default: "non.?gki|nongki|pre.?gki|lts|4\\.19|4\\.14|5\\.4|gki1|gki-1|qgki"
+      merge_keyword_regex:
+        description: "Regex for merge/search keywords"
+        required: false
+        default: "non.?gki|nongki|pre.?gki|lts|builtin|manual.?hook|ksud|sulog|sucompat|selinux.?hide|gki.?1|qgki"
+      path_filter:
+        description: "Space-separated path filters for commit history"
+        required: false
+        default: "kernel kernel/runtime kernel/sulog kernel/feature kernel/hook kernel/Kbuild kernel/Kconfig kernel/setup.sh"
+
+permissions:
+  contents: read
+
+jobs:
+  find:
+    name: Find candidate commits only
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Install tools
+        shell: bash
+        run: |
+          set -e
+          sudo apt-get update
+          sudo apt-get install -y git jq
+          mkdir -p logs debug reports
+
+      - name: Clone SukiSU repository with all refs
+        shell: bash
+        run: |
+          set -e
+          set -o pipefail
+          mkdir -p logs debug reports
+          {
+            REPO="${{ github.event.inputs.sukisu_repo }}"
+            REPO_URL="https://github.com/${REPO}.git"
+            echo "[INFO] Repository: ${REPO}"
+            echo "[INFO] URL: ${REPO_URL}"
+            echo "${REPO}" > debug/repo.txt
+            echo "${REPO_URL}" > debug/repo-url.txt
+
+            rm -rf sukisu-src
+            git clone --no-single-branch --filter=blob:none "${REPO_URL}" sukisu-src
+            git -C sukisu-src fetch --all --tags --prune
+
+            echo "[INFO] HEAD refs:"
+            git -C sukisu-src show-ref --heads --tags | tee debug/show-ref-heads-tags.txt
+
+            echo "[INFO] Remote branches:"
+            git -C sukisu-src branch -r | sort | tee debug/remote-branches.txt
+          } 2>&1 | tee logs/clone.log
+
+      - name: Resolve base branch and list possible non-GKI branches
+        shell: bash
+        run: |
+          set -e
+          set -o pipefail
+          mkdir -p logs debug reports
+          {
+            BASE_BRANCH="${{ github.event.inputs.base_branch }}"
+            BRANCH_REGEX="${{ github.event.inputs.non_gki_branch_regex }}"
+
+            if git -C sukisu-src rev-parse --verify "origin/${BASE_BRANCH}" >/dev/null 2>&1; then
+              BASE_REF="origin/${BASE_BRANCH}"
+            elif git -C sukisu-src rev-parse --verify "${BASE_BRANCH}" >/dev/null 2>&1; then
+              BASE_REF="${BASE_BRANCH}"
+            else
+              echo "[ERROR] Base branch/ref not found: ${BASE_BRANCH}"
+              git -C sukisu-src branch -a | sort
+              exit 1
+            fi
+
+            echo "${BASE_REF}" > debug/base-ref.txt
+            echo "[INFO] Base ref: ${BASE_REF}"
+            git -C sukisu-src show -s --format='%H%n%ci%n%s' "${BASE_REF}" | tee debug/base-ref-details.txt
+
+            echo "[INFO] Possible non-GKI branches by regex: ${BRANCH_REGEX}"
+            git -C sukisu-src branch -r | sed 's/^ *//' | grep -Eiv 'HEAD ->' | grep -Ei "${BRANCH_REGEX}" | sort \
+              | tee debug/possible-non-gki-branches.txt || true
+
+            if [ ! -s debug/possible-non-gki-branches.txt ]; then
+              echo "[WARN] No remote branch matched non-GKI regex"
+            fi
+          } 2>&1 | tee logs/resolve-branches.log
+
+      - name: Find latest commit before cutoff on base branch
+        shell: bash
+        run: |
+          set -e
+          set -o pipefail
+          mkdir -p logs debug reports
+          {
+            BASE_REF="$(cat debug/base-ref.txt)"
+            BEFORE_DATE="${{ github.event.inputs.before_date }}"
+            AFTER_DATE="${{ github.event.inputs.after_date }}"
+            LIMIT="${{ github.event.inputs.candidate_limit }}"
+            PATH_FILTER="${{ github.event.inputs.path_filter }}"
+
+            echo "[INFO] Base ref: ${BASE_REF}"
+            echo "[INFO] Date window: ${AFTER_DATE} -> ${BEFORE_DATE}"
+            echo "[INFO] Path filter: ${PATH_FILTER}"
+
+            LATEST_BEFORE="$(git -C sukisu-src rev-list -n 1 --before="${BEFORE_DATE}" "${BASE_REF}" || true)"
+            if [ -n "${LATEST_BEFORE}" ]; then
+              echo "${LATEST_BEFORE}" > debug/latest-before-cutoff.sha
+              git -C sukisu-src show -s --format='%H  %ci  %s' "${LATEST_BEFORE}" | tee reports/00-latest-base-commit-before-cutoff.txt
+            else
+              echo "[WARN] No latest commit found before cutoff on ${BASE_REF}" | tee reports/00-latest-base-commit-before-cutoff.txt
+            fi
+
+            echo "[INFO] Base branch commits in date window touching path filter"
+            # shellcheck disable=SC2086
+            git -C sukisu-src log "${BASE_REF}" \
+              --after="${AFTER_DATE}" \
+              --before="${BEFORE_DATE}" \
+              --date=iso-strict \
+              --pretty=format:'%H  %ci  %s' \
+              -- ${PATH_FILTER} \
+              | head -n "${LIMIT}" | tee reports/01-base-path-candidates.txt || true
+          } 2>&1 | tee logs/find-base-candidates.log
+
+      - name: Find keyword commits on all refs before cutoff
+        shell: bash
+        run: |
+          set -e
+          set -o pipefail
+          mkdir -p logs debug reports
+          {
+            BEFORE_DATE="${{ github.event.inputs.before_date }}"
+            AFTER_DATE="${{ github.event.inputs.after_date }}"
+            LIMIT="${{ github.event.inputs.candidate_limit }}"
+            KEYWORDS="${{ github.event.inputs.merge_keyword_regex }}"
+            PATH_FILTER="${{ github.event.inputs.path_filter }}"
+
+            echo "[INFO] Search merge/source keywords: ${KEYWORDS}"
+            echo "[INFO] Date window: ${AFTER_DATE} -> ${BEFORE_DATE}"
+
+            echo "[INFO] All-ref keyword candidates:"
+            # shellcheck disable=SC2086
+            git -C sukisu-src log --all \
+              --after="${AFTER_DATE}" \
+              --before="${BEFORE_DATE}" \
+              --regexp-ignore-case \
+              --extended-regexp \
+              --grep="${KEYWORDS}" \
+              --date=iso-strict \
+              --pretty=format:'%H  %ci  %D  %s' \
+              -- ${PATH_FILTER} \
+              | head -n "${LIMIT}" | tee reports/02-all-ref-keyword-candidates.txt || true
+
+            echo "[INFO] Merge commits on base ref matching keywords:"
+            BASE_REF="$(cat debug/base-ref.txt)"
+            # shellcheck disable=SC2086
+            git -C sukisu-src log "${BASE_REF}" \
+              --merges \
+              --after="${AFTER_DATE}" \
+              --before="${BEFORE_DATE}" \
+              --regexp-ignore-case \
+              --extended-regexp \
+              --grep="${KEYWORDS}" \
+              --date=iso-strict \
+              --pretty=format:'%H  %ci  %P  %s' \
+              -- ${PATH_FILTER} \
+              | head -n "${LIMIT}" | tee reports/03-base-merge-keyword-candidates.txt || true
+          } 2>&1 | tee logs/find-keyword-candidates.log
+
+      - name: Find merge-base and commits before merge for matching branches
+        shell: bash
+        run: |
+          set -e
+          set -o pipefail
+          mkdir -p logs debug reports
+          {
+            BASE_REF="$(cat debug/base-ref.txt)"
+            BEFORE_DATE="${{ github.event.inputs.before_date }}"
+            LIMIT="${{ github.event.inputs.candidate_limit }}"
+
+            : > reports/04-merge-base-summary.txt
+            : > reports/05-pre-merge-branch-candidates.txt
+            : > reports/06-branch-latest-before-cutoff.txt
+
+            if [ ! -s debug/possible-non-gki-branches.txt ]; then
+              echo "[WARN] No possible non-GKI branches to compare" | tee -a reports/04-merge-base-summary.txt
+              exit 0
+            fi
+
+            while IFS= read -r BR; do
+              [ -n "${BR}" ] || continue
+              echo "===== Branch: ${BR} =====" | tee -a reports/04-merge-base-summary.txt reports/05-pre-merge-branch-candidates.txt reports/06-branch-latest-before-cutoff.txt
+
+              MB="$(git -C sukisu-src merge-base "${BASE_REF}" "${BR}" || true)"
+              if [ -z "${MB}" ]; then
+                echo "[WARN] No merge-base between ${BASE_REF} and ${BR}" | tee -a reports/04-merge-base-summary.txt
+                continue
+              fi
+
+              echo "merge-base: ${MB}" | tee -a reports/04-merge-base-summary.txt
+              git -C sukisu-src show -s --format='merge-base-detail: %H  %ci  %s' "${MB}" | tee -a reports/04-merge-base-summary.txt
+
+              LATEST_BR="$(git -C sukisu-src rev-list -n 1 --before="${BEFORE_DATE}" "${BR}" || true)"
+              if [ -n "${LATEST_BR}" ]; then
+                git -C sukisu-src show -s --format='%H  %ci  %s' "${LATEST_BR}" | tee -a reports/06-branch-latest-before-cutoff.txt
+              else
+                echo "[WARN] No commit before ${BEFORE_DATE} on ${BR}" | tee -a reports/06-branch-latest-before-cutoff.txt
+              fi
+
+              echo "[INFO] Commits on ${BR} after merge-base and before cutoff:" | tee -a reports/05-pre-merge-branch-candidates.txt
+              git -C sukisu-src log "${MB}..${BR}" \
+                --before="${BEFORE_DATE}" \
+                --date=iso-strict \
+                --pretty=format:'%H  %ci  %s' \
+                | head -n "${LIMIT}" | tee -a reports/05-pre-merge-branch-candidates.txt || true
+              echo | tee -a reports/04-merge-base-summary.txt reports/05-pre-merge-branch-candidates.txt reports/06-branch-latest-before-cutoff.txt
+            done < debug/possible-non-gki-branches.txt
+          } 2>&1 | tee logs/find-merge-base.log
+
+      - name: Generate candidate summary Markdown
+        shell: bash
+        run: |
+          set -e
+          set -o pipefail
+          mkdir -p logs debug reports
+          {
+            echo "# SukiSU Commit Candidate Report"
+            echo
+            echo "## Inputs"
+            echo
+            echo "- Repository: \\`${{ github.event.inputs.sukisu_repo }}\\`"
+            echo "- Base branch: \\`${{ github.event.inputs.base_branch }}\\`"
+            echo "- Base ref: \\`$(cat debug/base-ref.txt 2>/dev/null || true)\\`"
+            echo "- Date window: \\`${{ github.event.inputs.after_date }}\\` -> \\`${{ github.event.inputs.before_date }}\\`"
+            echo "- Non-GKI branch regex: \\`${{ github.event.inputs.non_gki_branch_regex }}\\`"
+            echo "- Keyword regex: \\`${{ github.event.inputs.merge_keyword_regex }}\\`"
+            echo
+            echo "## How to use candidates"
+            echo
+            echo "Use a candidate SHA as \\`sukisu_source_ref\\` in your build workflow, for example:"
+            echo
+            echo '```text'
+            echo "sukisu_repo = ${{ github.event.inputs.sukisu_repo }}"
+            echo "sukisu_setup_ref = main"
+            echo "sukisu_source_ref = <candidate SHA>"
+            echo "sukisu_source_branch = ${{ github.event.inputs.base_branch }}"
+            echo '```'
+            echo
+            echo "## Latest base commit before cutoff"
+            echo
+            echo '```text'
+            cat reports/00-latest-base-commit-before-cutoff.txt 2>/dev/null || true
+            echo '```'
+            echo
+            echo "## Possible non-GKI branches"
+            echo
+            echo '```text'
+            cat debug/possible-non-gki-branches.txt 2>/dev/null || true
+            echo '```'
+            echo
+            echo "## Merge-base summary"
+            echo
+            echo '```text'
+            cat reports/04-merge-base-summary.txt 2>/dev/null || true
+            echo '```'
+            echo
+            echo "## Branch latest commits before cutoff"
+            echo
+            echo '```text'
+            cat reports/06-branch-latest-before-cutoff.txt 2>/dev/null || true
+            echo '```'
+            echo
+            echo "## Base path candidates"
+            echo
+            echo '```text'
+            cat reports/01-base-path-candidates.txt 2>/dev/null || true
+            echo '```'
+            echo
+            echo "## Keyword candidates"
+            echo
+            echo '```text'
+            cat reports/02-all-ref-keyword-candidates.txt 2>/dev/null || true
+            echo '```'
+          } > reports/SUMMARY.md
+
+          cat reports/SUMMARY.md
+
+      - name: Upload candidate reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sukisu-commit-candidate-report-${{ github.run_number }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            logs/**
+            debug/**
+            reports/**
